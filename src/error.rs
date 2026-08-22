@@ -49,6 +49,11 @@ pub enum Error {
     },
     /// The requested R2 object does not exist.
     NotFound,
+    /// A local file operation failed. Paths are intentionally omitted.
+    Io {
+        /// Stable name of the file operation that failed.
+        operation: &'static str,
+    },
     /// Presigning failed before a request was sent.
     Presign,
     /// A signed header could not be represented as text.
@@ -62,6 +67,7 @@ impl fmt::Display for Error {
             Self::InvalidInput { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::Service { operation } => write!(f, "R2 operation failed: {operation}"),
             Self::NotFound => write!(f, "R2 object was not found"),
+            Self::Io { operation } => write!(f, "local file operation failed: {operation}"),
             Self::Presign => write!(f, "failed to create a presigned R2 request"),
             Self::InvalidSignedHeader => write!(f, "presigned request contains a non-text header"),
         }

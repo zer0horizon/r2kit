@@ -12,8 +12,6 @@ use aws_sdk_s3::{
 
 use crate::{Bucket, Error, validation};
 
-const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
-const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
 const MAX_PARTS: u16 = 10_000;
 
@@ -345,12 +343,7 @@ impl MultipartPlan {
                 reason: "must not exceed R2's effective multipart object limit",
             });
         }
-        if !(MIN_PART_SIZE..=MAX_PART_SIZE).contains(&part_size) {
-            return Err(Error::InvalidInput {
-                field: "part_size",
-                reason: "must be between 5 MiB and 5 GiB",
-            });
-        }
+        validation::validate_part_size(part_size)?;
         let part_count = file_size.div_ceil(part_size);
         if part_count > u64::from(MAX_PARTS) {
             return Err(Error::InvalidInput {
@@ -648,13 +641,15 @@ mod tests {
 
     #[test]
     fn rejects_too_many_parts() {
-        let result = MultipartPlan::new(10_001 * MIN_PART_SIZE, MIN_PART_SIZE);
+        let min_part_size = 5 * 1024 * 1024;
+        let result = MultipartPlan::new(10_001 * min_part_size, min_part_size);
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_an_object_over_r2s_effective_limit() {
-        let result = MultipartPlan::new(MAX_MULTIPART_OBJECT_SIZE + 1, MAX_PART_SIZE);
+        let max_part_size = 5 * 1024 * 1024 * 1024;
+        let result = MultipartPlan::new(MAX_MULTIPART_OBJECT_SIZE + 1, max_part_size);
         assert!(result.is_err());
     }
 
@@ -683,14 +678,15 @@ mod tests {
 
     #[test]
     fn redacts_secret_wrappers() {
+        let min_part_size = 5 * 1024 * 1024;
         let url = SecretUrl("https://example.invalid/?X-Amz-Signature=secret".into());
         assert!(!format!("{url:?}").contains("X-Amz-Signature"));
         let snapshot = MultipartSessionSnapshot::restore(
             "r2kit",
             "key",
             "secret-upload-id",
-            MIN_PART_SIZE,
-            MIN_PART_SIZE,
+            min_part_size,
+            min_part_size,
         )
         .unwrap();
         assert!(!format!("{snapshot:?}").contains("secret-upload-id"));

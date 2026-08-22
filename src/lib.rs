@@ -9,6 +9,7 @@
 mod client;
 mod config;
 mod error;
+mod managed;
 mod multipart;
 mod object;
 mod validation;
@@ -16,6 +17,9 @@ mod validation;
 pub use client::{Bucket, R2Client};
 pub use config::{R2Config, R2ConfigBuilder};
 pub use error::{ConfigError, Error};
+pub use managed::{
+    ManagedMultipartBuilder, ManagedUploadError, ManagedUploadProgress, ManagedUploadResult,
+};
 pub use multipart::{
     CompletedObject, CompletionManifest, MultipartSessionSnapshot, PartNumber, PresignedMultipart,
     PresignedMultipartBuilder, PresignedRequest, PresignedUploadPart, SecretUrl, UploadedPart,

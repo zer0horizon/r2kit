@@ -17,6 +17,8 @@ debugging, and presigned multipart uploads for browser and mobile clients.
 - Presigned single-object GET and PUT requests with exact PUT lengths.
 - Canonical completion manifests using exact R2 ETags.
 - Complete, abort, snapshot, and resume multipart sessions.
+- Managed file multipart uploads with bounded concurrency, retry, progress,
+  automatic abort, and reuse of existing parts when resuming.
 - Raw `aws_sdk_s3::Client` escape hatch.
 - Streaming and in-memory PUT, streaming GET, HEAD, paginated LIST, and
   idempotent DELETE.
@@ -81,6 +83,32 @@ let manifest = CompletionManifest::try_from_parts(uploaded_parts)?;
 Presigned URLs and upload IDs are intentionally hidden from `Debug`. Exposing
 them requires an explicitly named method such as `SecretUrl::expose()` or
 `PresignedRequest::into_exposed_parts()`.
+
+## Managed file upload
+
+```rust,no_run
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = r2kit::R2Client::from_env()?;
+let bucket = client.bucket("media")?;
+let result = bucket
+    .managed_multipart("videos/demo.mp4")?
+    .part_size(16 * 1024 * 1024)
+    .concurrency(4)
+    .max_attempts(4)
+    .on_progress(|progress| {
+        eprintln!("{}/{} parts", progress.completed_parts(), progress.total_parts());
+    })
+    .upload_file("videos/demo.mp4")
+    .await?;
+
+eprintln!("completed {} parts", result.part_count());
+# Ok(())
+# }
+```
+
+By default, failures trigger a best-effort abort. Set `abort_on_error(false)`
+when the caller wants `ManagedUploadError::snapshot()` for a later resume. The
+source file must not change while an upload is running.
 
 ## Configuration
 

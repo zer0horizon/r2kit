@@ -15,12 +15,14 @@ include = ["/src/**", "/tests/**", "/docs/**", "/Cargo.toml", "/README.md", "/LI
 
 [features]
 default = []
-live-tests = ["dep:reqwest", "dep:tokio", "dep:uuid"]
+live-tests = ["dep:reqwest", "dep:uuid"]
 
 [dependencies]
 aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+bytes = "1"
+futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
@@ -34,6 +36,11 @@ required-features = ["live-tests"]
 [[test]]
 name = "live_object"
 path = "tests/live_object.rs"
+required-features = ["live-tests"]
+
+[[test]]
+name = "live_managed"
+path = "tests/live_managed.rs"
 required-features = ["live-tests"]
 
 [package.metadata.docs.rs]
