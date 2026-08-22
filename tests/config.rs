@@ -17,6 +17,21 @@ fn builds_r2_endpoint_and_auto_region() {
 }
 
 #[test]
+fn redacts_all_credentials_from_debug() {
+    let config = R2Config::builder()
+        .account_id("abc123")
+        .access_key_id("visible-access-key")
+        .secret_access_key("visible-secret-key")
+        .session_token("visible-session-token")
+        .build()
+        .unwrap();
+    let output = format!("{config:?}");
+    assert!(!output.contains("visible-access-key"));
+    assert!(!output.contains("visible-secret-key"));
+    assert!(!output.contains("visible-session-token"));
+}
+
+#[test]
 fn rejects_an_invalid_account_id() {
     let error = R2Config::builder()
         .account_id("has whitespace")

@@ -2,13 +2,27 @@
 name = "r2kit"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94.1"
 description = "An ergonomic Rust foundation for Cloudflare R2."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/trungdt/r2kit"
+repository = "https://github.com/zer0horizon/r2kit"
 keywords = ["cloudflare", "r2", "s3", "storage"]
 categories = ["api-bindings", "web-programming"]
 
+[features]
+default = []
+live-tests = ["dep:reqwest", "dep:tokio", "dep:uuid"]
+
 [dependencies]
+aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "live_presigned_multipart"
+path = "tests/live_presigned_multipart.rs"
+required-features = ["live-tests"]

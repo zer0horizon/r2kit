@@ -1,15 +1,16 @@
-use std::env;
+use std::{env, fmt};
 
 use crate::ConfigError;
 
 const R2_REGION: &str = "auto";
 
 /// Configuration needed to connect an S3-compatible client to Cloudflare R2.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct R2Config {
     account_id: String,
     access_key_id: String,
     secret_access_key: String,
+    session_token: Option<String>,
 }
 
 impl R2Config {
@@ -26,6 +27,7 @@ impl R2Config {
             .account_id(required_env("R2_ACCOUNT_ID")?)
             .access_key_id(required_env("R2_ACCESS_KEY_ID")?)
             .secret_access_key(required_env("R2_SECRET_ACCESS_KEY")?)
+            .optional_session_token(env::var("R2_SESSION_TOKEN").ok())
             .build()
     }
 
@@ -34,16 +36,16 @@ impl R2Config {
         &self.account_id
     }
 
-    /// Returns the access key ID used for S3-compatible authentication.
-    pub fn access_key_id(&self) -> &str {
+    pub(crate) fn access_key_id(&self) -> &str {
         &self.access_key_id
     }
 
-    /// Returns the secret access key used for S3-compatible authentication.
-    ///
-    /// Take care not to log this value.
-    pub fn secret_access_key(&self) -> &str {
+    pub(crate) fn secret_access_key(&self) -> &str {
         &self.secret_access_key
+    }
+
+    pub(crate) fn session_token(&self) -> Option<&str> {
+        self.session_token.as_deref()
     }
 
     /// Returns R2's required S3-compatible region, always `auto`.
@@ -57,12 +59,27 @@ impl R2Config {
     }
 }
 
+impl fmt::Debug for R2Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("R2Config")
+            .field("account_id", &self.account_id)
+            .field("access_key_id", &"[REDACTED]")
+            .field("secret_access_key", &"[REDACTED]")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
 /// Builder for [`R2Config`].
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct R2ConfigBuilder {
     account_id: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
+    session_token: Option<String>,
 }
 
 impl R2ConfigBuilder {
@@ -87,6 +104,18 @@ impl R2ConfigBuilder {
         self
     }
 
+    /// Sets a temporary credential session token.
+    #[must_use]
+    pub fn session_token(mut self, value: impl Into<String>) -> Self {
+        self.session_token = Some(value.into());
+        self
+    }
+
+    pub(crate) fn optional_session_token(mut self, value: Option<String>) -> Self {
+        self.session_token = value;
+        self
+    }
+
     /// Validates and creates the configuration.
     pub fn build(self) -> Result<R2Config, ConfigError> {
         let account_id = self
@@ -96,18 +125,53 @@ impl R2ConfigBuilder {
             return Err(ConfigError::InvalidAccountId);
         }
 
+        let access_key_id = required_non_empty(self.access_key_id, "access_key_id")?;
+        let secret_access_key = required_non_empty(self.secret_access_key, "secret_access_key")?;
+        if self
+            .session_token
+            .as_ref()
+            .is_some_and(|value| value.is_empty())
+        {
+            return Err(ConfigError::EmptyField("session_token"));
+        }
+
         Ok(R2Config {
             account_id,
-            access_key_id: self
-                .access_key_id
-                .ok_or(ConfigError::MissingField("access_key_id"))?,
-            secret_access_key: self
-                .secret_access_key
-                .ok_or(ConfigError::MissingField("secret_access_key"))?,
+            access_key_id,
+            secret_access_key,
+            session_token: self.session_token,
         })
+    }
+}
+
+impl fmt::Debug for R2ConfigBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("R2ConfigBuilder")
+            .field("account_id", &self.account_id)
+            .field(
+                "access_key_id",
+                &self.access_key_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "secret_access_key",
+                &self.secret_access_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
     }
 }
 
 fn required_env(name: &'static str) -> Result<String, ConfigError> {
     env::var(name).map_err(|_| ConfigError::MissingField(name))
+}
+
+fn required_non_empty(value: Option<String>, name: &'static str) -> Result<String, ConfigError> {
+    let value = value.ok_or(ConfigError::MissingField(name))?;
+    if value.is_empty() {
+        return Err(ConfigError::EmptyField(name));
+    }
+    Ok(value)
 }
