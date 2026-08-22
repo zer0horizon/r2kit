@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-23
+
 ### Added
 
 - R2-native client and bucket configuration.
@@ -15,4 +17,5 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retries, progress reporting, cancellation, and cleanup.
 - Secret-safe protocol and persistence types with optional Serde support.
 
-[Unreleased]: https://github.com/zer0horizon/r2kit/commits/main
+[Unreleased]: https://github.com/zer0horizon/r2kit/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/zer0horizon/r2kit/releases/tag/v0.1.0

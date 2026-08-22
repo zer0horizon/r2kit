@@ -84,3 +84,7 @@ cargo +nightly fuzz run protocol_boundaries -- -max_total_time=60
 
 By contributing, you agree that your work is licensed under either Apache-2.0
 or MIT, at the user's option.
+
+Maintainers preparing a release should follow the reproducible checklist in
+[`docs/releasing.md`](docs/releasing.md). Publishing and pushing a release tag
+remain explicit manual steps.
