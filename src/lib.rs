@@ -22,5 +22,5 @@ pub use multipart::{
 };
 pub use object::{
     DownloadedObject, ListObjectsBuilder, ObjectMetadata, ObjectPage, ObjectSummary,
-    PutObjectResult,
+    PresignedPutObject, PutObjectResult,
 };

@@ -14,6 +14,7 @@ debugging, and presigned multipart uploads for browser and mobile clients.
 - Redacted `Debug` output for credentials, upload IDs, and presigned URLs.
 - Validated multipart plans using R2's part-size and part-count constraints.
 - Presigned `UploadPart` requests with required headers.
+- Presigned single-object GET and PUT requests with exact PUT lengths.
 - Canonical completion manifests using exact R2 ETags.
 - Complete, abort, snapshot, and resume multipart sessions.
 - Raw `aws_sdk_s3::Client` escape hatch.

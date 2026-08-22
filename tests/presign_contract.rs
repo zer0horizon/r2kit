@@ -2,6 +2,17 @@ use std::time::Duration;
 
 use r2kit::{MultipartSessionSnapshot, PartNumber, R2Client, R2Config};
 
+fn offline_bucket() -> r2kit::Bucket {
+    let config = R2Config::builder()
+        .account_id("0123456789abcdef0123456789abcdef")
+        .access_key_id("contract-access-key")
+        .secret_access_key("contract-secret-key")
+        .session_token("contract-session-token")
+        .build()
+        .unwrap();
+    R2Client::new(config).bucket("r2kit").unwrap()
+}
+
 #[tokio::test]
 async fn presigns_upload_part_without_exposing_secrets_in_debug() {
     let config = R2Config::builder()
@@ -68,6 +79,45 @@ async fn rejects_invalid_presign_expiry_before_network() {
     assert!(
         session
             .presign_part(part, Duration::from_secs(604_801))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn presigns_single_get_and_put_with_redacted_bearer_urls() {
+    let bucket = offline_bucket();
+    let get = bucket
+        .presign_get("objects/file.bin", Duration::from_secs(900))
+        .await
+        .unwrap();
+    assert_eq!(get.method(), "GET");
+    assert!(get.url().expose().contains("X-Amz-Signature="));
+    assert!(!format!("{get:?}").contains("X-Amz-Signature"));
+
+    let put = bucket
+        .presign_put("objects/file.bin", 42, Duration::from_secs(900))
+        .await
+        .unwrap();
+    assert_eq!(put.content_length(), 42);
+    assert_eq!(put.request().method(), "PUT");
+    assert!(put.request().url().expose().contains("X-Amz-Signature="));
+    assert!(!format!("{put:?}").contains("X-Amz-Signature"));
+}
+
+#[tokio::test]
+async fn rejects_invalid_single_object_presign_contracts() {
+    let bucket = offline_bucket();
+
+    assert!(
+        bucket
+            .presign_get("key", Duration::from_millis(999))
+            .await
+            .is_err()
+    );
+    assert!(
+        bucket
+            .presign_put("key", 5 * 1024 * 1024 * 1024 + 1, Duration::from_secs(60))
             .await
             .is_err()
     );

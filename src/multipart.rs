@@ -16,7 +16,6 @@ const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
 const MAX_PARTS: u16 = 10_000;
-const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 /// A validated multipart part number in the range `1..=10_000`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -142,6 +141,22 @@ pub struct PresignedRequest {
 }
 
 impl PresignedRequest {
+    pub(crate) fn from_sdk(
+        signed: aws_sdk_s3::presigning::PresignedRequest,
+        expires_in: Duration,
+    ) -> Result<Self, Error> {
+        let required_headers = signed
+            .headers()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect();
+        Ok(Self {
+            method: signed.method().to_owned(),
+            url: SecretUrl(signed.uri().to_string()),
+            required_headers,
+            expires_at: SystemTime::now() + expires_in,
+        })
+    }
+
     /// Returns the HTTP method the uploader must use.
     #[must_use]
     pub fn method(&self) -> &str {
@@ -451,7 +466,7 @@ impl PresignedMultipart {
         expires_in: Duration,
     ) -> Result<PresignedUploadPart, Error> {
         let content_length = self.plan.part_length(number)?;
-        validate_expiry(expires_in)?;
+        validation::validate_expiry(expires_in)?;
         let config = PresigningConfig::expires_in(expires_in).map_err(|_| Error::Presign)?;
         let signed = self
             .bucket
@@ -466,20 +481,10 @@ impl PresignedMultipart {
             .await
             .map_err(|_| Error::Presign)?;
 
-        let required_headers = signed
-            .headers()
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .collect();
-
         Ok(PresignedUploadPart {
             part_number: number,
             content_length,
-            request: PresignedRequest {
-                method: signed.method().to_owned(),
-                url: SecretUrl(signed.uri().to_string()),
-                required_headers,
-                expires_at: SystemTime::now() + expires_in,
-            },
+            request: PresignedRequest::from_sdk(signed, expires_in)?,
         })
     }
 
@@ -623,17 +628,6 @@ impl Bucket {
     }
 }
 
-fn validate_expiry(expires_in: Duration) -> Result<(), Error> {
-    if expires_in < Duration::from_secs(1) || expires_in > Duration::from_secs(MAX_PRESIGN_SECONDS)
-    {
-        return Err(Error::InvalidInput {
-            field: "expires_in",
-            reason: "must be between 1 second and 7 days",
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,7 +660,7 @@ mod tests {
 
     #[test]
     fn rejects_subsecond_presign_expiry() {
-        assert!(validate_expiry(Duration::from_millis(999)).is_err());
+        assert!(validation::validate_expiry(Duration::from_millis(999)).is_err());
     }
 
     #[test]

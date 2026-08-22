@@ -1,8 +1,15 @@
-use std::{collections::BTreeMap, fmt, time::SystemTime};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    time::{Duration, SystemTime},
+};
 
-use aws_sdk_s3::primitives::{ByteStream, DateTime};
+use aws_sdk_s3::{
+    presigning::PresigningConfig,
+    primitives::{ByteStream, DateTime},
+};
 
-use crate::{Bucket, Error, validation};
+use crate::{Bucket, Error, PresignedRequest, validation};
 
 const MAX_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_LIST_KEYS: u16 = 1_000;
@@ -102,6 +109,33 @@ impl PutObjectResult {
     #[must_use]
     pub fn etag(&self) -> Option<&str> {
         self.etag.as_deref()
+    }
+}
+
+/// A presigned single-request upload with an exact expected body length.
+#[derive(Clone, Debug)]
+pub struct PresignedPutObject {
+    content_length: u64,
+    request: PresignedRequest,
+}
+
+impl PresignedPutObject {
+    /// Returns the exact body length the uploader must send.
+    #[must_use]
+    pub const fn content_length(&self) -> u64 {
+        self.content_length
+    }
+
+    /// Returns the signed PUT request.
+    #[must_use]
+    pub const fn request(&self) -> &PresignedRequest {
+        &self.request
+    }
+
+    /// Consumes this value and returns the signed PUT request.
+    #[must_use]
+    pub fn into_request(self) -> PresignedRequest {
+        self.request
     }
 }
 
@@ -310,6 +344,61 @@ impl ListObjectsBuilder {
 }
 
 impl Bucket {
+    /// Creates a temporary signed GET request for one object.
+    pub async fn presign_get(
+        &self,
+        key: impl Into<String>,
+        expires_in: Duration,
+    ) -> Result<PresignedRequest, Error> {
+        let key = key.into();
+        validation::validate_key(&key)?;
+        validation::validate_expiry(expires_in)?;
+        let config = PresigningConfig::expires_in(expires_in).map_err(|_| Error::Presign)?;
+        let signed = self
+            .client
+            .as_sdk()
+            .get_object()
+            .bucket(&self.name)
+            .key(key)
+            .presigned(config)
+            .await
+            .map_err(|_| Error::Presign)?;
+        PresignedRequest::from_sdk(signed, expires_in)
+    }
+
+    /// Creates a temporary signed PUT request for one object.
+    pub async fn presign_put(
+        &self,
+        key: impl Into<String>,
+        content_length: u64,
+        expires_in: Duration,
+    ) -> Result<PresignedPutObject, Error> {
+        let key = key.into();
+        validation::validate_key(&key)?;
+        validation::validate_expiry(expires_in)?;
+        if content_length > MAX_SINGLE_PUT_SIZE {
+            return Err(Error::InvalidInput {
+                field: "content_length",
+                reason: "single-request uploads must not exceed 5 GiB",
+            });
+        }
+        let config = PresigningConfig::expires_in(expires_in).map_err(|_| Error::Presign)?;
+        let signed = self
+            .client
+            .as_sdk()
+            .put_object()
+            .bucket(&self.name)
+            .key(key)
+            .content_length(content_length as i64)
+            .presigned(config)
+            .await
+            .map_err(|_| Error::Presign)?;
+        Ok(PresignedPutObject {
+            content_length,
+            request: PresignedRequest::from_sdk(signed, expires_in)?,
+        })
+    }
+
     /// Uploads an in-memory object with a single R2 request.
     pub async fn put_bytes(
         &self,

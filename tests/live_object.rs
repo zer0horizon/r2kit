@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, time::Duration};
 
 use r2kit::{Error, R2Client, R2Config};
 
@@ -89,4 +89,58 @@ async fn live_core_object_round_trip_and_pagination() {
         Err(Error::NotFound)
     ));
     assert!(matches!(bucket.get(&first_key).await, Err(Error::NotFound)));
+}
+
+#[tokio::test]
+#[ignore = "requires explicit bucket-scoped R2 credentials"]
+async fn live_presigned_put_and_get_round_trip() {
+    let client = live_client();
+    let bucket = client.bucket("r2kit-live-tests").unwrap();
+    let key = format!("_r2kit-tests/{}/presigned.bin", uuid::Uuid::new_v4());
+    let body = b"r2kit presigned object contract".to_vec();
+
+    let result = async {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "failed to build HTTP client")?;
+        let put = bucket
+            .presign_put(&key, body.len() as u64, Duration::from_secs(900))
+            .await
+            .map_err(|_| "PUT presign failed")?;
+        let (method, url, headers) = put.into_request().into_exposed_parts();
+        let method = method.parse().map_err(|_| "invalid PUT method")?;
+        let mut request = http.request(method, url).body(body.clone());
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request.send().await.map_err(|_| "PUT transport failed")?;
+        if !response.status().is_success() {
+            return Err("R2 rejected presigned PUT");
+        }
+
+        let get = bucket
+            .presign_get(&key, Duration::from_secs(900))
+            .await
+            .map_err(|_| "GET presign failed")?;
+        let (method, url, headers) = get.into_exposed_parts();
+        let method = method.parse().map_err(|_| "invalid GET method")?;
+        let mut request = http.request(method, url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request.send().await.map_err(|_| "GET transport failed")?;
+        if !response.status().is_success() {
+            return Err("R2 rejected presigned GET");
+        }
+        let actual = response.bytes().await.map_err(|_| "GET body failed")?;
+        if actual.as_ref() != body {
+            return Err("presigned GET bytes differ");
+        }
+        Ok::<(), &'static str>(())
+    }
+    .await;
+
+    let _ = bucket.delete(&key).await;
+    result.unwrap();
 }
