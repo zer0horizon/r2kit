@@ -1,0 +1,7 @@
+[alias]
+fmt-check = "fmt --all -- --check"
+lint = "clippy --all-targets --all-features -- -D warnings"
+test-all = "test --all-targets --all-features"
+test-docs = "test --doc --all-features"
+doc-check = "doc --all-features --no-deps"
+package-check = "package --allow-dirty"

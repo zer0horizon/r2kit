@@ -265,6 +265,13 @@ scope.
 
 ## Development
 
+The repository pins its Rust toolchain and keeps Git hooks in version control.
+After cloning, enable the hooks once:
+
+```sh
+./scripts/install-git-hooks.sh
+```
+
 Run the offline quality suite:
 
 ```sh

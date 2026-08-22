@@ -4,6 +4,30 @@
 transfer workflows. New APIs should remove R2-specific ceremony, enforce an R2
 invariant, or provide recovery and observability that the raw S3 SDK does not.
 
+## Toolchain and Git hooks
+
+The repository pins Rust 1.94.1 with the `rustfmt` and `clippy` components.
+Rustup installs the pinned toolchain automatically when a Cargo command runs in
+the repository.
+
+Install the version-controlled Git hooks once after cloning:
+
+```sh
+./scripts/install-git-hooks.sh
+```
+
+The pre-commit hook runs formatting and Clippy. The pre-push hook runs the test,
+doctest, rustdoc, and package checks. These hooks intentionally avoid live R2
+tests and never read `.env`.
+
+Run the same checks manually when needed:
+
+```sh
+./scripts/check.sh fast # formatting and Clippy
+./scripts/check.sh test # tests, docs, and package verification
+./scripts/check.sh full # both groups plus cargo-deny when installed
+```
+
 ## Local checks
 
 Run these checks before opening a pull request:
