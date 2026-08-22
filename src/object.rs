@@ -9,7 +9,7 @@ use aws_sdk_s3::{
     primitives::{ByteStream, DateTime},
 };
 
-use crate::{Bucket, Error, PresignedRequest, validation};
+use crate::{Bucket, Error, PresignedRequest, ValidationError, validation};
 
 const MAX_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_LIST_KEYS: u16 = 1_000;
@@ -244,10 +244,12 @@ impl ListObjectsBuilder {
     /// Validates the request and fetches one page.
     pub async fn send(self) -> Result<ObjectPage, Error> {
         if self.limit == 0 || self.limit > MAX_LIST_KEYS {
-            return Err(Error::InvalidInput {
-                field: "limit",
-                reason: "must be between 1 and 1,000",
-            });
+            return Err(ValidationError::ListLimitOutOfRange {
+                provided: self.limit,
+                min: 1,
+                max: MAX_LIST_KEYS,
+            }
+            .into());
         }
         if let Some(prefix) = self.prefix.as_deref() {
             validation::validate_prefix(prefix)?;
@@ -291,9 +293,7 @@ impl ListObjectsBuilder {
             .set_continuation_token(self.continuation_token)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "ListObjectsV2",
-            })?;
+            .map_err(|error| Error::remote("ListObjectsV2", &error))?;
 
         let objects = output
             .contents()
@@ -377,10 +377,11 @@ impl Bucket {
         validation::validate_key(&key)?;
         validation::validate_expiry(expires_in)?;
         if content_length > MAX_SINGLE_PUT_SIZE {
-            return Err(Error::InvalidInput {
-                field: "content_length",
-                reason: "single-request uploads must not exceed 5 GiB",
-            });
+            return Err(ValidationError::SingleUploadTooLarge {
+                provided: content_length,
+                max: MAX_SINGLE_PUT_SIZE,
+            }
+            .into());
         }
         let config = PresigningConfig::expires_in(expires_in).map_err(|_| Error::Presign)?;
         let signed = self
@@ -421,10 +422,11 @@ impl Bucket {
         let key = key.into();
         validation::validate_key(&key)?;
         if content_length > MAX_SINGLE_PUT_SIZE {
-            return Err(Error::InvalidInput {
-                field: "content_length",
-                reason: "single-request uploads must not exceed 5 GiB",
-            });
+            return Err(ValidationError::SingleUploadTooLarge {
+                provided: content_length,
+                max: MAX_SINGLE_PUT_SIZE,
+            }
+            .into());
         }
         let output = self
             .client
@@ -436,9 +438,7 @@ impl Bucket {
             .body(body)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "PutObject",
-            })?;
+            .map_err(|error| Error::remote("PutObject", &error))?;
         Ok(PutObjectResult { etag: output.e_tag })
     }
 
@@ -461,9 +461,7 @@ impl Bucket {
                 {
                     Error::NotFound
                 } else {
-                    Error::Service {
-                        operation: "GetObject",
-                    }
+                    Error::remote("GetObject", &error)
                 }
             })?;
         let metadata = ObjectMetadata {
@@ -499,9 +497,7 @@ impl Bucket {
                 {
                     Error::NotFound
                 } else {
-                    Error::Service {
-                        operation: "HeadObject",
-                    }
+                    Error::remote("HeadObject", &error)
                 }
             })?;
         Ok(ObjectMetadata {
@@ -525,9 +521,7 @@ impl Bucket {
             .key(key)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "DeleteObject",
-            })?;
+            .map_err(|error| Error::remote("DeleteObject", &error))?;
         Ok(())
     }
 

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use r2kit::{MultipartSessionSnapshot, PartMd5, PartNumber, R2Client, R2Config};
+use r2kit::{
+    Error, MultipartSessionSnapshot, PartMd5, PartNumber, R2Client, R2Config, ValidationError,
+};
 
 fn offline_bucket() -> r2kit::Bucket {
     let config = R2Config::builder()
@@ -75,13 +77,23 @@ async fn rejects_invalid_presign_expiry_before_network() {
     let session = bucket.resume_presigned_multipart(snapshot).unwrap();
     let part = PartNumber::try_from(1).unwrap();
 
-    assert!(session.presign_part(part, Duration::ZERO).await.is_err());
-    assert!(
-        session
-            .presign_part(part, Duration::from_secs(604_801))
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        session.presign_part(part, Duration::ZERO).await,
+        Err(Error::Validation(
+            ValidationError::PresignExpiryOutOfRange {
+                provided: Duration::ZERO,
+                min,
+                max
+            }
+        )) if min == Duration::from_secs(1) && max == Duration::from_secs(604_800)
+    ));
+    let too_long = Duration::from_secs(604_801);
+    assert!(matches!(
+        session.presign_part(part, too_long).await,
+        Err(Error::Validation(
+            ValidationError::PresignExpiryOutOfRange { provided, .. }
+        )) if provided == too_long
+    ));
 }
 
 #[tokio::test]
@@ -154,16 +166,19 @@ async fn presigns_single_get_and_put_with_redacted_bearer_urls() {
 async fn rejects_invalid_single_object_presign_contracts() {
     let bucket = offline_bucket();
 
-    assert!(
-        bucket
-            .presign_get("key", Duration::from_millis(999))
-            .await
-            .is_err()
-    );
-    assert!(
+    assert!(matches!(
+        bucket.presign_get("key", Duration::from_millis(999)).await,
+        Err(Error::Validation(
+            ValidationError::PresignExpiryOutOfRange { .. }
+        ))
+    ));
+    assert!(matches!(
         bucket
             .presign_put("key", 5 * 1024 * 1024 * 1024 + 1, Duration::from_secs(60))
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Validation(ValidationError::SingleUploadTooLarge {
+            provided: 5_368_709_121,
+            max: 5_368_709_120
+        }))
+    ));
 }

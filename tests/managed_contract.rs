@@ -1,4 +1,6 @@
-use r2kit::{Error, ManagedUploadCancellation, MultipartSessionSnapshot, R2Client, R2Config};
+use r2kit::{
+    Error, ManagedUploadCancellation, MultipartSessionSnapshot, R2Client, R2Config, ValidationError,
+};
 
 fn offline_bucket() -> r2kit::Bucket {
     let config = R2Config::builder()
@@ -23,10 +25,11 @@ async fn rejects_invalid_managed_limits_before_file_or_network_io() {
         .unwrap_err();
     assert!(matches!(
         concurrency.error(),
-        Error::InvalidInput {
-            field: "concurrency",
-            ..
-        }
+        Error::Validation(ValidationError::ConcurrencyOutOfRange {
+            provided: 0,
+            min: 1,
+            max: 64
+        })
     ));
 
     let attempts = bucket
@@ -38,10 +41,11 @@ async fn rejects_invalid_managed_limits_before_file_or_network_io() {
         .unwrap_err();
     assert!(matches!(
         attempts.error(),
-        Error::InvalidInput {
-            field: "max_attempts",
-            ..
-        }
+        Error::Validation(ValidationError::AttemptsOutOfRange {
+            provided: 11,
+            min: 1,
+            max: 10
+        })
     ));
 
     let part_size = bucket
@@ -53,10 +57,26 @@ async fn rejects_invalid_managed_limits_before_file_or_network_io() {
         .unwrap_err();
     assert!(matches!(
         part_size.error(),
-        Error::InvalidInput {
-            field: "part_size",
+        Error::Validation(ValidationError::PartSizeOutOfRange {
+            provided: 1024,
+            min: 5_242_880,
+            max: 5_368_709_120
+        })
+    ));
+
+    let overflowed_mib = bucket
+        .managed_multipart("object.bin")
+        .unwrap()
+        .part_size_mib(u64::MAX)
+        .upload_file("path-does-not-exist")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        overflowed_mib.error(),
+        Error::Validation(ValidationError::PartSizeOutOfRange {
+            provided: u64::MAX,
             ..
-        }
+        })
     ));
 }
 

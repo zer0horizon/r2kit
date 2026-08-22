@@ -130,7 +130,21 @@ invariants.
 | Upload a local file with concurrency and retries | `Bucket::managed_multipart` |
 | Let a browser or mobile client upload directly | `Bucket::presigned_multipart` |
 | Resume a persisted upload session | `Bucket::resume_managed_multipart` or `resume_presigned_multipart` |
+| Verify bucket existence and list permission at startup | `R2Client::validate_bucket` or `Bucket::validate_access` |
 | Use an S3 operation not wrapped by r2kit | `R2Client::as_sdk` |
+
+Bucket selection is offline by default. Applications that prefer a fail-fast
+startup check can explicitly perform one read-only request:
+
+```rust,no_run
+#[tokio::main]
+async fn main() -> Result<(), r2kit::Error> {
+let client = r2kit::R2Client::from_env()?;
+let bucket = client.validate_bucket("media").await?;
+assert_eq!(bucket.name(), "media");
+Ok(())
+}
+```
 
 ## Managed file uploads
 
@@ -146,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bucket = R2Client::from_env()?.bucket("media")?;
     let result = bucket
         .managed_multipart("videos/demo.mp4")?
-        .part_size(16 * 1024 * 1024)
+        .part_size_mib(16)
         .concurrency(4)
         .max_attempts(4)
         .on_progress(|progress| {
@@ -206,6 +220,14 @@ The trusted server creates a multipart session and signs each part. The
 untrusted uploader receives short-lived bearer URLs but never receives the R2
 access key or secret.
 
+`file_size` is intentionally required for this server-controlled flow. A web
+client sends its `File.size` when requesting a new upload; the server must treat
+that value as untrusted. r2kit validates it before contacting R2, uses it to
+calculate the number of parts and exact final-part length, rejects plans over
+R2's object or 10,000-part limits, and verifies the same plan before completion.
+If the trusted application is uploading a local path instead, use
+`managed_multipart(...).upload_file(path)`: that API reads the size itself.
+
 ```text
 trusted server                browser/mobile                    Cloudflare R2
       | create session               |                                |
@@ -220,12 +242,15 @@ use std::time::Duration;
 
 use r2kit::{CompletionManifest, PartMd5, PartNumber, R2Client};
 
-async fn sign_and_complete(part_md5_base64: &str) -> Result<(), r2kit::Error> {
+async fn sign_and_complete(
+    file_size_from_browser: u64,
+    part_md5_base64: &str,
+) -> Result<(), r2kit::Error> {
     let bucket = R2Client::from_env()?.bucket("media")?;
     let upload = bucket
         .presigned_multipart("videos/demo.mp4")?
-        .file_size(11 * 1024 * 1024)
-        .part_size(5 * 1024 * 1024)
+        .file_size(file_size_from_browser)
+        .part_size_mib(5)
         .create()
         .await?;
 
@@ -261,6 +286,7 @@ The default build has no optional features enabled.
 | Feature | Purpose |
 |---|---|
 | `serde` | Serialize versioned multipart session records, signed request DTOs, and uploader receipts |
+| `tracing` | Emit secret-safe diagnostic events through the application's existing `tracing` subscriber |
 | `live-tests` | Compile the credential-gated Cloudflare R2 integration tests; not intended for applications |
 
 Enable Serde when a session or protocol DTO crosses a storage or JSON boundary:
@@ -273,6 +299,51 @@ r2kit = { git = "https://github.com/zer0horizon/r2kit", features = ["serde"] }
 `MultipartSessionSnapshot::into_persistence_record()` deliberately exposes a
 secret-bearing persistence value. Store it as securely as an API credential.
 
+## Errors and observability
+
+Known numeric constraints are rejected locally before file or network I/O and
+include the supplied and accepted values. This includes multipart part size,
+part number, part count, object size, concurrency, attempt count, list limit,
+single-request upload size, and presign expiry.
+
+```rust,no_run
+use r2kit::{Error, ValidationError};
+
+fn inspect(error: Error) {
+match error {
+    Error::Validation(ValidationError::PartSizeOutOfRange {
+        provided,
+        min,
+        max,
+    }) => eprintln!("part size {provided} must be within {min}..={max} bytes"),
+    Error::Remote(remote) => eprintln!(
+        "{} failed: {} (status {:?})",
+        remote.operation(),
+        remote.kind(),
+        remote.status()
+    ),
+    other => eprintln!("{other}"),
+}
+}
+```
+
+Remote failures are reduced to a stable `ServiceErrorKind`, operation name, and
+optional HTTP status. Raw AWS SDK errors are intentionally not retained because
+they may contain signed request details. Object `GET` and `HEAD` preserve the
+convenient `Error::NotFound` result.
+
+Tracing is opt-in and disabled by default:
+
+```toml
+[dependencies]
+r2kit = { git = "https://github.com/zer0horizon/r2kit", features = ["tracing"] }
+```
+
+The library emits events to target `r2kit` but never installs a subscriber.
+Events contain operation/category/status and bounded transfer settings only;
+bucket names, object keys, local paths, account IDs, credentials, upload IDs,
+presigned URLs, and signed headers are excluded.
+
 ## Security model
 
 - Credentials, upload IDs, and presigned URLs are redacted from `Debug` and
@@ -281,6 +352,8 @@ secret-bearing persistence value. Store it as securely as an API credential.
   short expirations, and never log them.
 - Deterministic input failures are validated before network requests whenever
   possible.
+- R2 multipart plans enforce 5 MiB through 5 GiB parts, at most 10,000 parts,
+  equal non-final part sizes, and the effective multipart object limit.
 - Managed uploads use bounded concurrency and an exact retry limit.
 - Applications still own authorization, rate limiting, CORS policy, and the
   lifecycle policy for abandoned uploads.

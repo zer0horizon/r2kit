@@ -1,4 +1,7 @@
-use r2kit::{CompletionManifest, MultipartPartReceipt, MultipartSessionSnapshot};
+use r2kit::{
+    CompletionManifest, Error, MultipartPartReceipt, MultipartSessionSnapshot, PartNumber,
+    ValidationError,
+};
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -84,6 +87,22 @@ fn uploader_receipt_is_validated_at_the_trust_boundary() {
             .collect::<Vec<_>>(),
         [1, 2]
     );
+}
+
+#[test]
+fn part_number_errors_expose_the_exact_r2_bounds() {
+    for provided in [0, 10_001] {
+        assert!(matches!(
+            PartNumber::try_from(provided),
+            Err(Error::Validation(ValidationError::PartNumberOutOfRange {
+                provided: actual,
+                min: 1,
+                max: 10_000
+            })) if actual == provided
+        ));
+    }
+    assert_eq!(PartNumber::try_from(1).unwrap().get(), 1);
+    assert_eq!(PartNumber::try_from(10_000).unwrap().get(), 10_000);
 }
 
 #[cfg(feature = "serde")]

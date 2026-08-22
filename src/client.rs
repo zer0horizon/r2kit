@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_smithy_types::{retry::RetryConfig, timeout::TimeoutConfig};
 
-use crate::{Error, R2Config};
+use crate::{Error, R2Config, observability};
 
 /// A configured Cloudflare R2 client.
 #[derive(Clone)]
@@ -90,10 +90,10 @@ impl R2Client {
     /// Selects and validates an R2 bucket.
     pub fn bucket(&self, name: impl Into<String>) -> Result<Bucket, Error> {
         let name = name.into();
-        if name.len() < 3 || name.len() > 64 {
+        if name.len() < 3 || name.len() > 63 {
             return Err(Error::InvalidInput {
                 field: "bucket",
-                reason: "must contain between 3 and 64 bytes",
+                reason: "must contain between 3 and 63 bytes",
             });
         }
         if !name
@@ -112,6 +112,16 @@ impl R2Client {
             client: Arc::new(self.clone()),
             name,
         })
+    }
+
+    /// Selects a bucket and verifies that the current credentials can list it.
+    ///
+    /// This performs one `ListObjectsV2` request with a one-object page limit.
+    /// Use [`Self::bucket`] when startup network access is not desired.
+    pub async fn validate_bucket(&self, name: impl Into<String>) -> Result<Bucket, Error> {
+        let bucket = self.bucket(name)?;
+        bucket.validate_access().await?;
+        Ok(bucket)
     }
 }
 
@@ -133,5 +143,23 @@ impl Bucket {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Verifies that this bucket exists and the current credentials can list it.
+    ///
+    /// The check performs one read-only `ListObjectsV2` request and does not
+    /// return or log object keys. It is optional and never runs implicitly.
+    pub async fn validate_access(&self) -> Result<(), Error> {
+        observability::preflight("start");
+        self.client
+            .as_sdk()
+            .list_objects_v2()
+            .bucket(&self.name)
+            .max_keys(1)
+            .send()
+            .await
+            .map_err(|error| Error::remote("ListObjectsV2", &error))?;
+        observability::preflight("complete");
+        Ok(())
     }
 }

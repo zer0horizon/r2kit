@@ -13,6 +13,15 @@ fn live_client() -> R2Client {
 
 #[tokio::test]
 #[ignore = "requires explicit bucket-scoped R2 credentials"]
+async fn live_bucket_preflight_confirms_read_access() {
+    live_client()
+        .validate_bucket("r2kit-live-tests")
+        .await
+        .expect("dedicated live bucket must be accessible");
+}
+
+#[tokio::test]
+#[ignore = "requires explicit bucket-scoped R2 credentials"]
 async fn live_core_object_round_trip_and_pagination() {
     let client = live_client();
     let bucket = client.bucket("r2kit-live-tests").unwrap();

@@ -1,5 +1,5 @@
 use aws_sdk_s3::{config::Credentials, primitives::ByteStream};
-use r2kit::{Error, R2Client, R2Config};
+use r2kit::{Error, R2Client, R2Config, ValidationError};
 
 fn offline_bucket() -> r2kit::Bucket {
     let config = R2Config::builder()
@@ -25,17 +25,48 @@ fn offline_bucket() -> r2kit::Bucket {
         .unwrap()
 }
 
+#[test]
+fn enforces_the_documented_r2_bucket_name_length() {
+    let config = R2Config::builder()
+        .account_id("0123456789abcdef0123456789abcdef")
+        .access_key_id("offline-access")
+        .secret_access_key("offline-secret")
+        .build()
+        .unwrap();
+    let client = R2Client::new(config);
+
+    assert!(client.bucket("a".repeat(63)).is_ok());
+    assert!(matches!(
+        client.bucket("a".repeat(64)),
+        Err(Error::InvalidInput {
+            field: "bucket",
+            ..
+        })
+    ));
+}
+
 #[tokio::test]
 async fn rejects_invalid_list_options_before_network() {
     let bucket = offline_bucket();
 
     let zero = bucket.list().limit(0).send().await.unwrap_err();
-    assert!(matches!(zero, Error::InvalidInput { field: "limit", .. }));
+    assert!(matches!(
+        zero,
+        Error::Validation(ValidationError::ListLimitOutOfRange {
+            provided: 0,
+            min: 1,
+            max: 1_000
+        })
+    ));
 
     let too_large = bucket.list().limit(1_001).send().await.unwrap_err();
     assert!(matches!(
         too_large,
-        Error::InvalidInput { field: "limit", .. }
+        Error::Validation(ValidationError::ListLimitOutOfRange {
+            provided: 1_001,
+            min: 1,
+            max: 1_000
+        })
     ));
 
     let empty_token = bucket
@@ -73,9 +104,9 @@ async fn rejects_invalid_object_writes_before_network() {
         .unwrap_err();
     assert!(matches!(
         too_large,
-        Error::InvalidInput {
-            field: "content_length",
-            ..
-        }
+        Error::Validation(ValidationError::SingleUploadTooLarge {
+            provided: 5_368_709_121,
+            max: 5_368_709_120
+        })
     ));
 }

@@ -11,8 +11,9 @@ use aws_sdk_s3::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-use crate::{Bucket, Error, validation};
+use crate::{Bucket, Error, ValidationError, validation};
 
+// https://developers.cloudflare.com/r2/platform/limits/
 const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
 const MAX_PARTS: u16 = 10_000;
 
@@ -32,15 +33,19 @@ impl TryFrom<u16> for PartNumber {
     type Error = Error;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
-        let value = NonZeroU16::new(value).ok_or(Error::InvalidInput {
-            field: "part_number",
-            reason: "must be at least 1",
+        let provided = value;
+        let value = NonZeroU16::new(value).ok_or(ValidationError::PartNumberOutOfRange {
+            provided,
+            min: 1,
+            max: MAX_PARTS,
         })?;
         if value.get() > MAX_PARTS {
-            return Err(Error::InvalidInput {
-                field: "part_number",
-                reason: "must not exceed 10,000",
-            });
+            return Err(ValidationError::PartNumberOutOfRange {
+                provided,
+                min: 1,
+                max: MAX_PARTS,
+            }
+            .into());
         }
         Ok(Self(value))
     }
@@ -635,24 +640,23 @@ struct MultipartPlan {
 impl MultipartPlan {
     fn new(file_size: u64, part_size: u64) -> Result<Self, Error> {
         if file_size == 0 {
-            return Err(Error::InvalidInput {
-                field: "file_size",
-                reason: "must be greater than zero for multipart upload",
-            });
+            return Err(ValidationError::MultipartFileSizeZero.into());
         }
         if file_size > MAX_MULTIPART_OBJECT_SIZE {
-            return Err(Error::InvalidInput {
-                field: "file_size",
-                reason: "must not exceed R2's effective multipart object limit",
-            });
+            return Err(ValidationError::MultipartObjectTooLarge {
+                provided: file_size,
+                max: MAX_MULTIPART_OBJECT_SIZE,
+            }
+            .into());
         }
         validation::validate_part_size(part_size)?;
         let part_count = file_size.div_ceil(part_size);
         if part_count > u64::from(MAX_PARTS) {
-            return Err(Error::InvalidInput {
-                field: "file_size",
-                reason: "requires more than 10,000 parts",
-            });
+            return Err(ValidationError::TooManyParts {
+                required: part_count,
+                max: MAX_PARTS,
+            }
+            .into());
         }
         Ok(Self {
             file_size,
@@ -720,6 +724,16 @@ pub struct PresignedMultipartBuilder {
 
 impl PresignedMultipartBuilder {
     /// Sets the complete object size in bytes.
+    ///
+    /// This is required because r2kit plans every part before creating the
+    /// remote upload: it determines the final part length, enforces R2's object
+    /// and 10,000-part limits, signs exact content lengths, and later verifies
+    /// the remote parts. For browser uploads, send the browser's `File.size`
+    /// to the trusted server and treat it as untrusted input; r2kit validates
+    /// the value before network I/O.
+    ///
+    /// Managed local-file uploads do not require this setting because
+    /// [`crate::ManagedMultipartBuilder::upload_file`] reads file metadata.
     #[must_use]
     pub const fn file_size(mut self, bytes: u64) -> Self {
         self.file_size = Some(bytes);
@@ -730,6 +744,17 @@ impl PresignedMultipartBuilder {
     #[must_use]
     pub const fn part_size(mut self, bytes: u64) -> Self {
         self.part_size = Some(bytes);
+        self
+    }
+
+    /// Sets the uniform multipart part size in mebibytes (MiB).
+    ///
+    /// This is equivalent to [`Self::part_size`] with a binary-unit conversion
+    /// and avoids repeating `1024 * 1024` at call sites. Values that cannot be
+    /// represented as bytes are rejected by [`Self::create`].
+    #[must_use]
+    pub const fn part_size_mib(mut self, mebibytes: u64) -> Self {
+        self.part_size = Some(validation::mebibytes(mebibytes));
         self
     }
 
@@ -754,9 +779,7 @@ impl PresignedMultipartBuilder {
             .key(&self.key)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "CreateMultipartUpload",
-            })?;
+            .map_err(|error| Error::remote("CreateMultipartUpload", &error))?;
         let upload_id = output.upload_id().ok_or(Error::Service {
             operation: "CreateMultipartUpload",
         })?;
@@ -868,9 +891,7 @@ impl PresignedMultipart {
                 .set_part_number_marker(marker)
                 .send()
                 .await
-                .map_err(|_| Error::Service {
-                    operation: "ListParts",
-                })?;
+                .map_err(|error| Error::remote("ListParts", &error))?;
             for remote in output.parts() {
                 let raw_number = remote.part_number().ok_or(Error::Service {
                     operation: "ListParts",
@@ -988,9 +1009,7 @@ impl PresignedMultipart {
             .multipart_upload(upload)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "CompleteMultipartUpload",
-            })?;
+            .map_err(|error| Error::remote("CompleteMultipartUpload", &error))?;
 
         Ok(CompletedObject {
             etag: output.e_tag().map(ToOwned::to_owned),
@@ -1008,9 +1027,7 @@ impl PresignedMultipart {
             .upload_id(&self.upload_id)
             .send()
             .await
-            .map_err(|_| Error::Service {
-                operation: "AbortMultipartUpload",
-            })?;
+            .map_err(|error| Error::remote("AbortMultipartUpload", &error))?;
         Ok(())
     }
 
@@ -1111,19 +1128,38 @@ mod tests {
     fn rejects_too_many_parts() {
         let min_part_size = 5 * 1024 * 1024;
         let result = MultipartPlan::new(10_001 * min_part_size, min_part_size);
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(Error::Validation(ValidationError::TooManyParts {
+                required: 10_001,
+                max: 10_000
+            }))
+        ));
     }
 
     #[test]
     fn rejects_an_object_over_r2s_effective_limit() {
         let max_part_size = 5 * 1024 * 1024 * 1024;
         let result = MultipartPlan::new(MAX_MULTIPART_OBJECT_SIZE + 1, max_part_size);
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(Error::Validation(
+                ValidationError::MultipartObjectTooLarge {
+                    provided,
+                    max: MAX_MULTIPART_OBJECT_SIZE
+                }
+            )) if provided == MAX_MULTIPART_OBJECT_SIZE + 1
+        ));
     }
 
     #[test]
     fn rejects_subsecond_presign_expiry() {
-        assert!(validation::validate_expiry(Duration::from_millis(999)).is_err());
+        assert!(matches!(
+            validation::validate_expiry(Duration::from_millis(999)),
+            Err(Error::Validation(
+                ValidationError::PresignExpiryOutOfRange { provided, .. }
+            )) if provided == Duration::from_millis(999)
+        ));
     }
 
     #[test]

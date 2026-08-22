@@ -22,7 +22,7 @@ use tokio::sync::watch;
 
 use crate::{
     Bucket, CompletedObject, CompletionManifest, Error, MultipartSessionSnapshot, PartNumber,
-    PresignedMultipart, UploadedPart, validation,
+    PresignedMultipart, UploadedPart, ValidationError, observability, validation,
 };
 
 const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024;
@@ -244,6 +244,17 @@ impl ManagedMultipartBuilder {
         self
     }
 
+    /// Sets the multipart part size in mebibytes (MiB).
+    ///
+    /// This is equivalent to [`Self::part_size`] with a binary-unit conversion
+    /// and avoids repeating `1024 * 1024` at call sites. Unrepresentable or
+    /// out-of-range values are rejected before file or network I/O.
+    #[must_use]
+    pub const fn part_size_mib(mut self, mebibytes: u64) -> Self {
+        self.part_size = validation::mebibytes(mebibytes);
+        self
+    }
+
     /// Sets the maximum number of in-flight parts, from 1 through 64.
     #[must_use]
     pub const fn concurrency(mut self, value: usize) -> Self {
@@ -292,6 +303,7 @@ impl ManagedMultipartBuilder {
         path: impl AsRef<Path>,
     ) -> Result<ManagedUploadResult, ManagedUploadError> {
         self.validate().map_err(ManagedUploadError::before_start)?;
+        observability::managed_upload("start", self.part_size, self.concurrency, self.max_attempts);
         let path = path.as_ref().to_owned();
         let metadata = tokio::fs::metadata(&path).await.map_err(|_| {
             ManagedUploadError::before_start(Error::Io {
@@ -351,7 +363,15 @@ impl ManagedMultipartBuilder {
         };
 
         match result {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                observability::managed_upload(
+                    "complete",
+                    self.part_size,
+                    self.concurrency,
+                    self.max_attempts,
+                );
+                Ok(result)
+            }
             Err(error) => Err(self.after_start_error(error, &session).await),
         }
     }
@@ -359,16 +379,20 @@ impl ManagedMultipartBuilder {
     fn validate(&self) -> Result<(), Error> {
         validation::validate_part_size(self.part_size)?;
         if self.concurrency == 0 || self.concurrency > MAX_CONCURRENCY {
-            return Err(Error::InvalidInput {
-                field: "concurrency",
-                reason: "must be between 1 and 64",
-            });
+            return Err(ValidationError::ConcurrencyOutOfRange {
+                provided: self.concurrency,
+                min: 1,
+                max: MAX_CONCURRENCY,
+            }
+            .into());
         }
         if self.max_attempts == 0 || self.max_attempts > MAX_ATTEMPTS {
-            return Err(Error::InvalidInput {
-                field: "max_attempts",
-                reason: "must be between 1 and 10",
-            });
+            return Err(ValidationError::AttemptsOutOfRange {
+                provided: self.max_attempts,
+                min: 1,
+                max: MAX_ATTEMPTS,
+            }
+            .into());
         }
         Ok(())
     }
@@ -639,9 +663,7 @@ async fn upload_part_with_retry(
         tokio::time::sleep,
     )
     .await
-    .map_err(|_| Error::Service {
-        operation: "UploadPart",
-    })?;
+    .map_err(|error| Error::remote("UploadPart", &error))?;
     let etag = output.e_tag().ok_or(Error::Service {
         operation: "UploadPart",
     })?;
@@ -666,7 +688,14 @@ where
         match operation().await {
             Ok(value) => return Ok(value),
             Err(error) if attempt < max_attempts && classify(&error) => {
-                sleep(retry_delay(attempt, number)).await;
+                let delay = retry_delay(attempt, number);
+                observability::upload_part_retry(
+                    number.get(),
+                    attempt,
+                    max_attempts,
+                    delay.as_millis().min(u128::from(u64::MAX)) as u64,
+                );
+                sleep(delay).await;
             }
             Err(error) => return Err(error),
         }

@@ -17,6 +17,7 @@ include = ["/src/**", "/tests/**", "/examples/**", "/docs/**", "/Cargo.toml", "/
 default = []
 live-tests = []
 serde = ["dep:serde"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
@@ -26,6 +27,7 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 serde = { version = "1", features = ["derive"], optional = true }
 tokio = { version = "1", default-features = false, features = ["fs", "io-util", "sync", "time"] }
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 md-5 = "0.11"

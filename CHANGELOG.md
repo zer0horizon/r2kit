@@ -6,6 +6,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Machine-readable numeric validation errors with supplied and accepted bounds.
+- Sanitized R2/AWS failure categories without exposing raw SDK errors.
+- Explicit read-only bucket-access preflight helpers.
+- Optional secret-safe `tracing` events, disabled by default.
+- `part_size_mib` conveniences for readable multipart configuration without
+  repeated byte-unit arithmetic.
+
+### Fixed
+
+- Enforced R2's documented 63-character bucket-name maximum.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

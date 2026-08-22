@@ -20,6 +20,8 @@ only when it provides at least one of:
 
 - Credentials, presigned URLs, and upload IDs are sensitive by default.
 - Deterministic invalid input is rejected before network I/O.
+- Numeric constraint failures are machine-readable and retain supplied and
+  accepted bounds; free-form remote SDK errors never cross the public API.
 - Completion requires every planned part exactly once and preserves exact R2
   ETags.
 - Live tests use a dedicated bucket, randomized object prefixes, and best-effort
@@ -37,6 +39,21 @@ only when it provides at least one of:
   disable SDK retries and enforce their own exact attempt count.
 - `from_sdk` is an explicit unchecked boundary: the caller owns endpoint,
   region, credentials, transport, and retry correctness.
+- Bucket selection is offline. `validate_bucket` and `validate_access` are
+  explicit, read-only preflight calls for applications that want fail-fast
+  bucket existence and list-permission checks.
+
+## Error and observability boundary
+
+R2 service error codes are classified first, with HTTP status and SDK transport
+category as bounded fallbacks. Public remote errors contain only the operation,
+stable category, and optional status. The raw SDK error is deliberately dropped
+because it can retain signed request details.
+
+The optional `tracing` feature emits events through the application's existing
+subscriber. It never installs global state. Its field allowlist excludes bucket
+names, keys, local paths, account IDs, credentials, upload IDs, presigned URLs,
+and signed headers.
 
 ## Production multipart protocol
 
