@@ -139,10 +139,11 @@ startup check can explicitly perform one read-only request:
 ```rust,no_run
 #[tokio::main]
 async fn main() -> Result<(), r2kit::Error> {
-let client = r2kit::R2Client::from_env()?;
-let bucket = client.validate_bucket("media").await?;
-assert_eq!(bucket.name(), "media");
-Ok(())
+    let client = r2kit::R2Client::from_env()?;
+    let bucket = client.validate_bucket("media").await?;
+
+    assert_eq!(bucket.name(), "media");
+    Ok(())
 }
 ```
 
@@ -310,20 +311,20 @@ single-request upload size, and presign expiry.
 use r2kit::{Error, ValidationError};
 
 fn inspect(error: Error) {
-match error {
-    Error::Validation(ValidationError::PartSizeOutOfRange {
-        provided,
-        min,
-        max,
-    }) => eprintln!("part size {provided} must be within {min}..={max} bytes"),
-    Error::Remote(remote) => eprintln!(
-        "{} failed: {} (status {:?})",
-        remote.operation(),
-        remote.kind(),
-        remote.status()
-    ),
-    other => eprintln!("{other}"),
-}
+    match error {
+        Error::Validation(ValidationError::PartSizeOutOfRange {
+            provided,
+            min,
+            max,
+        }) => eprintln!("part size {provided} must be within {min}..={max} bytes"),
+        Error::Remote(remote) => eprintln!(
+            "{} failed: {} (status {:?})",
+            remote.operation(),
+            remote.kind(),
+            remote.status()
+        ),
+        other => eprintln!("{other}"),
+    }
 }
 ```
 
