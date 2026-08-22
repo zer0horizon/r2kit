@@ -106,7 +106,7 @@ impl ManagedUploadResult {
 /// Failure from a managed upload, including recoverable session state.
 pub struct ManagedUploadError {
     error: Error,
-    snapshot: Option<MultipartSessionSnapshot>,
+    snapshot: Option<Box<MultipartSessionSnapshot>>,
     aborted: bool,
 }
 
@@ -119,8 +119,8 @@ impl ManagedUploadError {
 
     /// Returns resumable state when the upload may still exist remotely.
     #[must_use]
-    pub const fn snapshot(&self) -> Option<&MultipartSessionSnapshot> {
-        self.snapshot.as_ref()
+    pub fn snapshot(&self) -> Option<&MultipartSessionSnapshot> {
+        self.snapshot.as_deref()
     }
 
     /// Returns whether automatic abort completed successfully.
@@ -432,7 +432,7 @@ impl ManagedMultipartBuilder {
         } else {
             ManagedUploadError {
                 error,
-                snapshot: Some(snapshot),
+                snapshot: Some(Box::new(snapshot)),
                 aborted: false,
             }
         }
