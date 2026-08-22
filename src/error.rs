@@ -47,6 +47,8 @@ pub enum Error {
         /// Name of the operation that failed.
         operation: &'static str,
     },
+    /// The requested R2 object does not exist.
+    NotFound,
     /// Presigning failed before a request was sent.
     Presign,
     /// A signed header could not be represented as text.
@@ -59,6 +61,7 @@ impl fmt::Display for Error {
             Self::Config(error) => error.fmt(f),
             Self::InvalidInput { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::Service { operation } => write!(f, "R2 operation failed: {operation}"),
+            Self::NotFound => write!(f, "R2 object was not found"),
             Self::Presign => write!(f, "failed to create a presigned R2 request"),
             Self::InvalidSignedHeader => write!(f, "presigned request contains a non-text header"),
         }

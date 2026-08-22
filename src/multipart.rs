@@ -10,13 +10,12 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 
-use crate::{Bucket, Error};
+use crate::{Bucket, Error, validation};
 
 const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
 const MAX_PARTS: u16 = 10_000;
-const MAX_KEY_BYTES: usize = 1_024;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 /// A validated multipart part number in the range `1..=10_000`.
@@ -249,7 +248,7 @@ impl MultipartSessionSnapshot {
         part_size: u64,
     ) -> Result<Self, Error> {
         let key = key.into();
-        validate_key(&key)?;
+        validation::validate_key(&key)?;
         MultipartPlan::new(file_size, part_size)?;
         let upload_id = upload_id.into();
         if upload_id.is_empty() {
@@ -594,7 +593,7 @@ impl Bucket {
         key: impl Into<String>,
     ) -> Result<PresignedMultipartBuilder, Error> {
         let key = key.into();
-        validate_key(&key)?;
+        validation::validate_key(&key)?;
         Ok(PresignedMultipartBuilder {
             bucket: self.clone(),
             key,
@@ -622,16 +621,6 @@ impl Bucket {
             plan,
         })
     }
-}
-
-fn validate_key(key: &str) -> Result<(), Error> {
-    if key.is_empty() || key.len() > MAX_KEY_BYTES {
-        return Err(Error::InvalidInput {
-            field: "key",
-            reason: "must contain between 1 and 1,024 UTF-8 bytes",
-        });
-    }
-    Ok(())
 }
 
 fn validate_expiry(expires_in: Duration) -> Result<(), Error> {

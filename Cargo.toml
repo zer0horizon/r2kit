@@ -31,6 +31,11 @@ name = "live_presigned_multipart"
 path = "tests/live_presigned_multipart.rs"
 required-features = ["live-tests"]
 
+[[test]]
+name = "live_object"
+path = "tests/live_object.rs"
+required-features = ["live-tests"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

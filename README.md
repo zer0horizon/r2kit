@@ -17,6 +17,29 @@ debugging, and presigned multipart uploads for browser and mobile clients.
 - Canonical completion manifests using exact R2 ETags.
 - Complete, abort, snapshot, and resume multipart sessions.
 - Raw `aws_sdk_s3::Client` escape hatch.
+- Streaming and in-memory PUT, streaming GET, HEAD, paginated LIST, and
+  idempotent DELETE.
+
+## Core object operations
+
+```rust,no_run
+# async fn example() -> Result<(), r2kit::Error> {
+let client = r2kit::R2Client::from_env()?;
+let bucket = client.bucket("media")?;
+
+let uploaded = bucket.put_bytes("hello.txt", b"hello R2".to_vec()).await?;
+let metadata = bucket.head("hello.txt").await?;
+let download = bucket.get("hello.txt").await?;
+let body = download.into_body();
+
+let page = bucket.list().prefix("uploads/").limit(100).send().await?;
+let next = page.next_continuation_token();
+
+bucket.delete("hello.txt").await?;
+# let _ = (uploaded, metadata, body, next);
+# Ok(())
+# }
+```
 
 ## Presigned multipart flow
 
