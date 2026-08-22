@@ -94,26 +94,27 @@ abort the remote session.
 ```rust,no_run
 use r2kit::R2Client;
 
-# async fn upload() -> Result<(), Box<dyn std::error::Error>> {
-let bucket = R2Client::from_env()?.bucket("media")?;
-let result = bucket
-    .managed_multipart("videos/demo.mp4")?
-    .part_size(16 * 1024 * 1024)
-    .concurrency(4)
-    .max_attempts(4)
-    .on_progress(|progress| {
-        eprintln!(
-            "{}/{} bytes",
-            progress.transferred_bytes(),
-            progress.total_bytes()
-        );
-    })
-    .upload_file("videos/demo.mp4")
-    .await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bucket = R2Client::from_env()?.bucket("media")?;
+    let result = bucket
+        .managed_multipart("videos/demo.mp4")?
+        .part_size(16 * 1024 * 1024)
+        .concurrency(4)
+        .max_attempts(4)
+        .on_progress(|progress| {
+            eprintln!(
+                "{}/{} bytes",
+                progress.transferred_bytes(),
+                progress.total_bytes()
+            );
+        })
+        .upload_file("videos/demo.mp4")
+        .await?;
 
-eprintln!("completed {} parts", result.part_count());
-# Ok(())
-# }
+    eprintln!("completed {} parts", result.part_count());
+    Ok(())
+}
 ```
 
 The uploader owns the `UploadPart` retry policy. Network failures, HTTP 408,
@@ -131,21 +132,22 @@ Cancellation is cooperative: signal it from another task and continue awaiting
 the upload so r2kit can abort the remote multipart session.
 
 ```rust,no_run
-# async fn upload() -> Result<(), Box<dyn std::error::Error>> {
-let bucket = r2kit::R2Client::from_env()?.bucket("media")?;
-let cancellation = r2kit::ManagedUploadCancellation::new();
-let signal = cancellation.clone();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bucket = r2kit::R2Client::from_env()?.bucket("media")?;
+    let cancellation = r2kit::ManagedUploadCancellation::new();
+    let signal = cancellation.clone();
 
-let upload = bucket
-    .managed_multipart("videos/demo.mp4")?
-    .cancellation_token(cancellation)
-    .upload_file("videos/demo.mp4");
+    let upload = bucket
+        .managed_multipart("videos/demo.mp4")?
+        .cancellation_token(cancellation)
+        .upload_file("videos/demo.mp4");
 
-signal.cancel();
-let error = upload.await.unwrap_err();
-assert!(matches!(error.error(), r2kit::Error::Cancelled));
-# Ok(())
-# }
+    signal.cancel();
+    let error = upload.await.unwrap_err();
+    assert!(matches!(error.error(), r2kit::Error::Cancelled));
+    Ok(())
+}
 ```
 
 Dropping the future cannot perform asynchronous cleanup. Signal cancellation
@@ -171,35 +173,34 @@ use std::time::Duration;
 
 use r2kit::{CompletionManifest, PartMd5, PartNumber, R2Client};
 
-# async fn sign_and_complete(part_md5_base64: &str) -> Result<(), r2kit::Error> {
-let bucket = R2Client::from_env()?.bucket("media")?;
-let upload = bucket
-    .presigned_multipart("videos/demo.mp4")?
-    .file_size(11 * 1024 * 1024)
-    .part_size(5 * 1024 * 1024)
-    .create()
-    .await?;
+async fn sign_and_complete(part_md5_base64: &str) -> Result<(), r2kit::Error> {
+    let bucket = R2Client::from_env()?.bucket("media")?;
+    let upload = bucket
+        .presigned_multipart("videos/demo.mp4")?
+        .file_size(11 * 1024 * 1024)
+        .part_size(5 * 1024 * 1024)
+        .create()
+        .await?;
 
-let part = upload
-    .presign_part_with_md5(
-        PartNumber::try_from(1)?,
-        PartMd5::try_from(part_md5_base64)?,
-        Duration::from_secs(15 * 60),
-    )
-    .await?;
+    let part = upload
+        .presign_part_with_md5(
+            PartNumber::try_from(1)?,
+            PartMd5::try_from(part_md5_base64)?,
+            Duration::from_secs(15 * 60),
+        )
+        .await?;
 
-// Deliberate exposure boundary for sending the bearer request to the uploader.
-let request = part.into_protocol_request()?;
-# let _ = request;
+    // Deliberate exposure boundary for sending the bearer request to the uploader.
+    let _request = part.into_protocol_request()?;
 
-// After collecting and validating every uploader receipt:
-let remote = upload.reconcile().await?;
-if remote.is_complete() {
-    let manifest: CompletionManifest = remote.into_completion_manifest()?;
-    upload.complete_verified(manifest).await?;
+    // After collecting and validating every uploader receipt:
+    let remote = upload.reconcile().await?;
+    if remote.is_complete() {
+        let manifest: CompletionManifest = remote.into_completion_manifest()?;
+        upload.complete_verified(manifest).await?;
+    }
+    Ok(())
 }
-# Ok(())
-# }
 ```
 
 For browser uploads, configure bucket CORS to allow `Content-MD5` and expose
