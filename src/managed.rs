@@ -291,7 +291,7 @@ impl ManagedMultipartBuilder {
         session: &PresignedMultipart,
     ) -> Result<ManagedUploadResult, Error> {
         let existing = if self.resume.is_some() {
-            list_uploaded_parts(&self.bucket, session).await?
+            list_uploaded_parts(session).await?
         } else {
             Vec::new()
         };
@@ -577,68 +577,13 @@ fn retry_delay(attempt: u8, number: PartNumber) -> Duration {
     Duration::from_millis(base + jitter)
 }
 
-async fn list_uploaded_parts(
-    bucket: &Bucket,
-    session: &PresignedMultipart,
-) -> Result<Vec<UploadedPart>, Error> {
-    let snapshot = session.snapshot();
-    let mut marker = None;
-    let mut uploaded = Vec::new();
-    let mut seen = BTreeSet::new();
-    loop {
-        let output = bucket
-            .client
-            .as_sdk()
-            .list_parts()
-            .bucket(snapshot.bucket())
-            .key(snapshot.key())
-            .upload_id(snapshot.expose_upload_id())
-            .max_parts(1_000)
-            .set_part_number_marker(marker)
-            .send()
-            .await
-            .map_err(|_| Error::Service {
-                operation: "ListParts",
-            })?;
-        for remote in output.parts() {
-            let raw_number = remote.part_number().ok_or(Error::Service {
-                operation: "ListParts",
-            })?;
-            let number = u16::try_from(raw_number)
-                .ok()
-                .and_then(|value| PartNumber::try_from(value).ok())
-                .ok_or(Error::Service {
-                    operation: "ListParts",
-                })?;
-            let expected = session.part_length(number)?;
-            if remote.size().and_then(|size| u64::try_from(size).ok()) != Some(expected) {
-                return Err(Error::InvalidInput {
-                    field: "remote_parts",
-                    reason: "an existing part has an unexpected size",
-                });
-            }
-            let etag = remote.e_tag().ok_or(Error::Service {
-                operation: "ListParts",
-            })?;
-            if !seen.insert(number) {
-                return Err(Error::InvalidInput {
-                    field: "remote_parts",
-                    reason: "contains a duplicate part number",
-                });
-            }
-            uploaded.push(UploadedPart::new(number, etag)?);
-        }
-        if output.is_truncated() != Some(true) {
-            break;
-        }
-        marker = output.next_part_number_marker;
-        if marker.is_none() {
-            return Err(Error::Service {
-                operation: "ListParts",
-            });
-        }
-    }
-    Ok(uploaded)
+async fn list_uploaded_parts(session: &PresignedMultipart) -> Result<Vec<UploadedPart>, Error> {
+    Ok(session
+        .reconcile()
+        .await?
+        .uploaded_parts()
+        .cloned()
+        .collect())
 }
 
 fn planned_part_length(file_size: u64, part_size: u64, number: PartNumber) -> Result<u64, Error> {

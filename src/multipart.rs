@@ -2,13 +2,14 @@ use std::{
     collections::BTreeMap,
     fmt,
     num::NonZeroU16,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use aws_sdk_s3::{
     presigning::PresigningConfig,
     types::{CompletedMultipartUpload, CompletedPart},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crate::{Bucket, Error, validation};
 
@@ -50,6 +51,86 @@ impl TryFrom<u16> for PartNumber {
 pub struct UploadedPart {
     part_number: PartNumber,
     etag: String,
+}
+
+/// A validated Base64-encoded 128-bit MD5 digest for one multipart part.
+///
+/// R2 checks this value against the request body when it is included in a
+/// presigned `UploadPart` request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartMd5(String);
+
+impl PartMd5 {
+    /// Returns the canonical Base64 representation expected by `Content-MD5`.
+    #[must_use]
+    pub fn as_base64(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PartMd5 {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let decoded = STANDARD.decode(&value).map_err(|_| Error::InvalidInput {
+            field: "content_md5",
+            reason: "must be canonical Base64 for a 128-bit MD5 digest",
+        })?;
+        if decoded.len() != 16 || STANDARD.encode(decoded) != value {
+            return Err(Error::InvalidInput {
+                field: "content_md5",
+                reason: "must be canonical Base64 for a 128-bit MD5 digest",
+            });
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for PartMd5 {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from(value.to_owned())
+    }
+}
+
+/// Untrusted transport data reported by a direct multipart uploader.
+///
+/// Convert this value with [`MultipartPartReceipt::try_into_uploaded_part`]
+/// before using it in a completion manifest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct MultipartPartReceipt {
+    part_number: u16,
+    etag: String,
+}
+
+impl MultipartPartReceipt {
+    /// Creates a wire receipt from primitive values.
+    #[must_use]
+    pub fn new(part_number: u16, etag: impl Into<String>) -> Self {
+        Self {
+            part_number,
+            etag: etag.into(),
+        }
+    }
+
+    /// Returns the unvalidated numeric part number.
+    #[must_use]
+    pub const fn part_number(&self) -> u16 {
+        self.part_number
+    }
+
+    /// Returns the exact ETag reported by R2.
+    #[must_use]
+    pub fn etag(&self) -> &str {
+        &self.etag
+    }
+
+    /// Validates this untrusted receipt for use in a completion manifest.
+    pub fn try_into_uploaded_part(self) -> Result<UploadedPart, Error> {
+        UploadedPart::new(PartNumber::try_from(self.part_number)?, self.etag)
+    }
 }
 
 impl UploadedPart {
@@ -102,6 +183,22 @@ impl CompletionManifest {
             });
         }
         Ok(Self(canonical.into_values().collect()))
+    }
+
+    /// Validates untrusted uploader receipts and builds a canonical manifest.
+    pub fn try_from_receipts(
+        receipts: impl IntoIterator<Item = MultipartPartReceipt>,
+    ) -> Result<Self, Error> {
+        receipts
+            .into_iter()
+            .map(MultipartPartReceipt::try_into_uploaded_part)
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(Self::try_from_parts)
+    }
+
+    /// Iterates over canonical parts in ascending part-number order.
+    pub fn parts(&self) -> impl ExactSizeIterator<Item = &UploadedPart> {
+        self.0.iter()
     }
 }
 
@@ -212,6 +309,7 @@ impl fmt::Debug for PresignedRequest {
 pub struct PresignedUploadPart {
     part_number: PartNumber,
     content_length: u64,
+    content_md5: Option<PartMd5>,
     request: PresignedRequest,
 }
 
@@ -228,6 +326,12 @@ impl PresignedUploadPart {
         self.content_length
     }
 
+    /// Returns the body checksum enforced by R2, when one was signed.
+    #[must_use]
+    pub fn content_md5(&self) -> Option<&PartMd5> {
+        self.content_md5.as_ref()
+    }
+
     /// Returns the signed request.
     #[must_use]
     pub fn request(&self) -> &PresignedRequest {
@@ -239,6 +343,109 @@ impl PresignedUploadPart {
     pub fn into_request(self) -> PresignedRequest {
         self.request
     }
+
+    /// Deliberately exposes the bearer request as a serializable protocol DTO.
+    ///
+    /// The resulting value still redacts its URL and header values from
+    /// `Debug`, but serialization exposes them for transport to an uploader.
+    pub fn into_protocol_request(self) -> Result<MultipartUploadPartRequest, Error> {
+        let expires_at_unix_seconds = self
+            .request
+            .expires_at()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Presign)?
+            .as_secs();
+        let (method, url, required_headers) = self.request.into_exposed_parts();
+        Ok(MultipartUploadPartRequest {
+            part_number: self.part_number.get(),
+            content_length: self.content_length,
+            content_md5: self.content_md5.map(|value| value.0),
+            method,
+            url,
+            required_headers,
+            expires_at_unix_seconds,
+        })
+    }
+}
+
+/// Serializable protocol DTO sent from a trusted signer to an uploader.
+///
+/// This value contains a bearer URL. Serialization is therefore an explicit
+/// secret-exposure boundary even though `Debug` remains redacted.
+#[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct MultipartUploadPartRequest {
+    part_number: u16,
+    content_length: u64,
+    content_md5: Option<String>,
+    method: String,
+    url: String,
+    required_headers: Vec<(String, String)>,
+    expires_at_unix_seconds: u64,
+}
+
+impl MultipartUploadPartRequest {
+    /// Returns the part number this request may upload.
+    #[must_use]
+    pub const fn part_number(&self) -> u16 {
+        self.part_number
+    }
+
+    /// Returns the exact required request-body length.
+    #[must_use]
+    pub const fn content_length(&self) -> u64 {
+        self.content_length
+    }
+
+    /// Returns the signed Base64 `Content-MD5`, when enabled.
+    #[must_use]
+    pub fn content_md5(&self) -> Option<&str> {
+        self.content_md5.as_deref()
+    }
+
+    /// Returns the signed HTTP method.
+    #[must_use]
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    /// Deliberately exposes the bearer URL to the uploader.
+    #[must_use]
+    pub fn expose_url(&self) -> &str {
+        &self.url
+    }
+
+    /// Returns headers that the uploader must replay exactly.
+    pub fn required_headers(&self) -> impl ExactSizeIterator<Item = (&str, &str)> {
+        self.required_headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
+    /// Returns the approximate Unix expiration timestamp in seconds.
+    #[must_use]
+    pub const fn expires_at_unix_seconds(&self) -> u64 {
+        self.expires_at_unix_seconds
+    }
+}
+
+impl fmt::Debug for MultipartUploadPartRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self
+            .required_headers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        f.debug_struct("MultipartUploadPartRequest")
+            .field("part_number", &self.part_number)
+            .field("content_length", &self.content_length)
+            .field("content_md5", &self.content_md5)
+            .field("method", &self.method)
+            .field("url", &"[REDACTED PRESIGNED URL]")
+            .field("required_header_names", &header_names)
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .finish()
+    }
 }
 
 /// Persistable state needed to resume a presigned multipart upload.
@@ -249,6 +456,72 @@ pub struct MultipartSessionSnapshot {
     upload_id: String,
     file_size: u64,
     part_size: u64,
+}
+
+/// Versioned persistence DTO for resuming a multipart session.
+///
+/// This value contains an upload ID. Serialization deliberately exposes that
+/// credential to the selected persistence layer, while `Debug` redacts it.
+#[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct MultipartSessionRecord {
+    version: u8,
+    bucket: String,
+    key: String,
+    upload_id: String,
+    file_size: u64,
+    part_size: u64,
+}
+
+impl MultipartSessionRecord {
+    /// Returns the persistence schema version.
+    #[must_use]
+    pub const fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Returns the bucket stored in this untrusted record.
+    #[must_use]
+    pub fn bucket(&self) -> &str {
+        &self.bucket
+    }
+
+    /// Returns the key stored in this untrusted record.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Deliberately exposes the persisted upload ID.
+    #[must_use]
+    pub fn expose_upload_id(&self) -> &str {
+        &self.upload_id
+    }
+
+    /// Returns the planned object size.
+    #[must_use]
+    pub const fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Returns the planned part size.
+    #[must_use]
+    pub const fn part_size(&self) -> u64 {
+        self.part_size
+    }
+}
+
+impl fmt::Debug for MultipartSessionRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MultipartSessionRecord")
+            .field("version", &self.version)
+            .field("bucket", &self.bucket)
+            .field("key", &self.key)
+            .field("upload_id", &"[REDACTED]")
+            .field("file_size", &self.file_size)
+            .field("part_size", &self.part_size)
+            .finish()
+    }
 }
 
 impl MultipartSessionSnapshot {
@@ -277,6 +550,36 @@ impl MultipartSessionSnapshot {
             file_size,
             part_size,
         })
+    }
+
+    /// Validates a deserialized persistence record before it becomes session state.
+    pub fn from_persistence_record(record: MultipartSessionRecord) -> Result<Self, Error> {
+        if record.version != 1 {
+            return Err(Error::InvalidInput {
+                field: "version",
+                reason: "unsupported multipart session record version",
+            });
+        }
+        Self::restore(
+            record.bucket,
+            record.key,
+            record.upload_id,
+            record.file_size,
+            record.part_size,
+        )
+    }
+
+    /// Deliberately exposes resumable state as a versioned persistence DTO.
+    #[must_use]
+    pub fn into_persistence_record(self) -> MultipartSessionRecord {
+        MultipartSessionRecord {
+            version: 1,
+            bucket: self.bucket,
+            key: self.key,
+            upload_id: self.upload_id,
+            file_size: self.file_size,
+            part_size: self.part_size,
+        }
     }
 
     /// Deliberately exposes the upload ID for persistence.
@@ -370,6 +673,42 @@ impl MultipartPlan {
     }
 }
 
+/// Server-observed state of a live multipart upload.
+#[derive(Clone, Debug)]
+pub struct MultipartReconciliation {
+    uploaded_parts: Vec<UploadedPart>,
+    missing_parts: Vec<PartNumber>,
+}
+
+impl MultipartReconciliation {
+    /// Returns uploaded parts in ascending part-number order.
+    pub fn uploaded_parts(&self) -> impl ExactSizeIterator<Item = &UploadedPart> {
+        self.uploaded_parts.iter()
+    }
+
+    /// Returns planned parts that R2 has not received yet.
+    pub fn missing_parts(&self) -> impl ExactSizeIterator<Item = PartNumber> + '_ {
+        self.missing_parts.iter().copied()
+    }
+
+    /// Returns whether R2 has every planned part with the expected size.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.missing_parts.is_empty()
+    }
+
+    /// Builds a canonical completion manifest when every part is present.
+    pub fn into_completion_manifest(self) -> Result<CompletionManifest, Error> {
+        if !self.missing_parts.is_empty() {
+            return Err(Error::InvalidInput {
+                field: "remote_parts",
+                reason: "multipart upload is missing planned parts",
+            });
+        }
+        CompletionManifest::try_from_parts(self.uploaded_parts)
+    }
+}
+
 /// Builder for a new presigned multipart upload session.
 #[derive(Clone, Debug)]
 pub struct PresignedMultipartBuilder {
@@ -458,10 +797,32 @@ impl PresignedMultipart {
         number: PartNumber,
         expires_in: Duration,
     ) -> Result<PresignedUploadPart, Error> {
+        self.presign_part_inner(number, None, expires_in).await
+    }
+
+    /// Creates a signed PUT request that makes R2 verify `Content-MD5`.
+    ///
+    /// The uploader must replay the returned `content-md5` header exactly.
+    pub async fn presign_part_with_md5(
+        &self,
+        number: PartNumber,
+        content_md5: PartMd5,
+        expires_in: Duration,
+    ) -> Result<PresignedUploadPart, Error> {
+        self.presign_part_inner(number, Some(content_md5), expires_in)
+            .await
+    }
+
+    async fn presign_part_inner(
+        &self,
+        number: PartNumber,
+        content_md5: Option<PartMd5>,
+        expires_in: Duration,
+    ) -> Result<PresignedUploadPart, Error> {
         let content_length = self.plan.part_length(number)?;
         validation::validate_expiry(expires_in)?;
         let config = PresigningConfig::expires_in(expires_in).map_err(|_| Error::Presign)?;
-        let signed = self
+        let request = self
             .bucket
             .client
             .as_sdk()
@@ -469,7 +830,12 @@ impl PresignedMultipart {
             .bucket(&self.bucket.name)
             .key(&self.key)
             .upload_id(&self.upload_id)
-            .part_number(i32::from(number.get()))
+            .part_number(i32::from(number.get()));
+        let request = match &content_md5 {
+            Some(value) => request.content_md5(value.as_base64()),
+            None => request,
+        };
+        let signed = request
             .presigned(config)
             .await
             .map_err(|_| Error::Presign)?;
@@ -477,8 +843,110 @@ impl PresignedMultipart {
         Ok(PresignedUploadPart {
             part_number: number,
             content_length,
+            content_md5,
             request: PresignedRequest::from_sdk(signed, expires_in)?,
         })
+    }
+
+    /// Reconciles persisted client state with the parts currently stored by R2.
+    ///
+    /// Every remote part is checked for a valid number, a unique entry, and
+    /// the exact size required by the original upload plan.
+    pub async fn reconcile(&self) -> Result<MultipartReconciliation, Error> {
+        let mut marker = None;
+        let mut uploaded = BTreeMap::new();
+        loop {
+            let output = self
+                .bucket
+                .client
+                .as_sdk()
+                .list_parts()
+                .bucket(&self.bucket.name)
+                .key(&self.key)
+                .upload_id(&self.upload_id)
+                .max_parts(1_000)
+                .set_part_number_marker(marker)
+                .send()
+                .await
+                .map_err(|_| Error::Service {
+                    operation: "ListParts",
+                })?;
+            for remote in output.parts() {
+                let raw_number = remote.part_number().ok_or(Error::Service {
+                    operation: "ListParts",
+                })?;
+                let number = u16::try_from(raw_number)
+                    .ok()
+                    .and_then(|value| PartNumber::try_from(value).ok())
+                    .ok_or(Error::InvalidInput {
+                        field: "remote_parts",
+                        reason: "contains an invalid part number",
+                    })?;
+                let expected_size =
+                    self.plan
+                        .part_length(number)
+                        .map_err(|_| Error::InvalidInput {
+                            field: "remote_parts",
+                            reason: "contains a part outside the upload plan",
+                        })?;
+                if remote.size().and_then(|size| u64::try_from(size).ok()) != Some(expected_size) {
+                    return Err(Error::InvalidInput {
+                        field: "remote_parts",
+                        reason: "contains a part with an unexpected size",
+                    });
+                }
+                let etag = remote.e_tag().ok_or(Error::Service {
+                    operation: "ListParts",
+                })?;
+                let part = UploadedPart::new(number, etag)?;
+                if uploaded.insert(number, part).is_some() {
+                    return Err(Error::InvalidInput {
+                        field: "remote_parts",
+                        reason: "contains a duplicate part number",
+                    });
+                }
+            }
+            if output.is_truncated() != Some(true) {
+                break;
+            }
+            marker = output.next_part_number_marker;
+            if marker.is_none() {
+                return Err(Error::Service {
+                    operation: "ListParts",
+                });
+            }
+        }
+
+        let missing_parts = (1..=self.plan.part_count)
+            .filter_map(|number| {
+                let number = PartNumber::try_from(number).expect("planned part numbers are valid");
+                (!uploaded.contains_key(&number)).then_some(number)
+            })
+            .collect();
+        Ok(MultipartReconciliation {
+            uploaded_parts: uploaded.into_values().collect(),
+            missing_parts,
+        })
+    }
+
+    /// Verifies client receipts against R2 before completing the upload.
+    ///
+    /// This extra `ListParts` round trip rejects stale, missing, incorrectly
+    /// sized, or mismatched part receipts before `CompleteMultipartUpload`.
+    pub async fn complete_verified(
+        &self,
+        manifest: CompletionManifest,
+    ) -> Result<CompletedObject, Error> {
+        let reconciliation = self.reconcile().await?;
+        if !reconciliation.is_complete()
+            || reconciliation.uploaded_parts.as_slice() != manifest.0.as_slice()
+        {
+            return Err(Error::InvalidInput {
+                field: "parts",
+                reason: "does not match the parts currently stored by R2",
+            });
+        }
+        self.complete(manifest).await
     }
 
     /// Completes the upload with the exact ETags returned by every uploaded part.

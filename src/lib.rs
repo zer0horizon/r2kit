@@ -21,8 +21,10 @@ pub use managed::{
     ManagedMultipartBuilder, ManagedUploadError, ManagedUploadProgress, ManagedUploadResult,
 };
 pub use multipart::{
-    CompletedObject, CompletionManifest, MultipartSessionSnapshot, PartNumber, PresignedMultipart,
-    PresignedMultipartBuilder, PresignedRequest, PresignedUploadPart, SecretUrl, UploadedPart,
+    CompletedObject, CompletionManifest, MultipartPartReceipt, MultipartReconciliation,
+    MultipartSessionRecord, MultipartSessionSnapshot, MultipartUploadPartRequest, PartMd5,
+    PartNumber, PresignedMultipart, PresignedMultipartBuilder, PresignedRequest,
+    PresignedUploadPart, SecretUrl, UploadedPart,
 };
 pub use object::{
     DownloadedObject, ListObjectsBuilder, ObjectMetadata, ObjectPage, ObjectSummary,

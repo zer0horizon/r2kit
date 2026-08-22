@@ -1,4 +1,4 @@
-use r2kit::MultipartSessionSnapshot;
+use r2kit::{CompletionManifest, MultipartPartReceipt, MultipartSessionSnapshot};
 
 #[test]
 fn multipart_snapshot_exposes_every_persistence_field_deliberately() {
@@ -19,4 +19,91 @@ fn multipart_snapshot_exposes_every_persistence_field_deliberately() {
 
     let debug = format!("{snapshot:?}");
     assert!(!debug.contains("sensitive-upload-id"));
+}
+
+#[test]
+fn persistence_record_round_trips_through_validation() {
+    let snapshot = MultipartSessionSnapshot::restore(
+        "example-bucket",
+        "videos/example.mp4",
+        "sensitive-upload-id",
+        11 * 1024 * 1024,
+        5 * 1024 * 1024,
+    )
+    .unwrap();
+    let record = snapshot.into_persistence_record();
+
+    assert_eq!(record.version(), 1);
+    assert_eq!(record.expose_upload_id(), "sensitive-upload-id");
+    assert!(!format!("{record:?}").contains("sensitive-upload-id"));
+
+    let restored = MultipartSessionSnapshot::from_persistence_record(record).unwrap();
+    assert_eq!(restored.key(), "videos/example.mp4");
+}
+
+#[test]
+fn uploader_receipt_is_validated_at_the_trust_boundary() {
+    let receipt = MultipartPartReceipt::new(1, "\"etag-from-r2\"");
+    let uploaded = receipt.try_into_uploaded_part().unwrap();
+    assert_eq!(uploaded.part_number().get(), 1);
+    assert_eq!(uploaded.etag(), "\"etag-from-r2\"");
+
+    assert!(
+        MultipartPartReceipt::new(0, "etag")
+            .try_into_uploaded_part()
+            .is_err()
+    );
+    assert!(
+        MultipartPartReceipt::new(1, "")
+            .try_into_uploaded_part()
+            .is_err()
+    );
+
+    let manifest = CompletionManifest::try_from_receipts([
+        MultipartPartReceipt::new(2, "etag-2"),
+        MultipartPartReceipt::new(1, "etag-1"),
+    ])
+    .unwrap();
+    assert_eq!(
+        manifest
+            .parts()
+            .map(|part| part.part_number().get())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn persistence_record_and_receipt_support_serde_without_leaking_in_debug() {
+    let snapshot = MultipartSessionSnapshot::restore(
+        "example-bucket",
+        "videos/example.mp4",
+        "sensitive-upload-id",
+        5 * 1024 * 1024,
+        5 * 1024 * 1024,
+    )
+    .unwrap();
+    let json = serde_json::to_string(&snapshot.into_persistence_record()).unwrap();
+    let record = serde_json::from_str(&json).unwrap();
+    let restored = MultipartSessionSnapshot::from_persistence_record(record).unwrap();
+    assert_eq!(restored.expose_upload_id(), "sensitive-upload-id");
+
+    let receipt = MultipartPartReceipt::new(1, "etag");
+    let json = serde_json::to_string(&receipt).unwrap();
+    let decoded: MultipartPartReceipt = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, receipt);
+
+    let snapshot = MultipartSessionSnapshot::restore(
+        "example-bucket",
+        "videos/example.mp4",
+        "sensitive-upload-id",
+        5 * 1024 * 1024,
+        5 * 1024 * 1024,
+    )
+    .unwrap();
+    let mut unsupported = serde_json::to_value(snapshot.into_persistence_record()).unwrap();
+    unsupported["version"] = serde_json::json!(2);
+    let record = serde_json::from_value(unsupported).unwrap();
+    assert!(MultipartSessionSnapshot::from_persistence_record(record).is_err());
 }

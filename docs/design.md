@@ -25,6 +25,31 @@ only when it provides at least one of:
 - Live tests use a dedicated bucket, randomized object prefixes, and best-effort
   cleanup. Pull requests do not receive live credentials.
 
+## Production multipart protocol
+
+The trusted signer owns session creation, persistence, reconciliation,
+completion, and abort. An untrusted browser or mobile client receives only one
+short-lived part request at a time and reports the exact ETag returned by R2.
+
+- `MultipartSessionRecord` is versioned and must be validated back into a
+  `MultipartSessionSnapshot` after deserialization. Its upload ID is a secret.
+- `MultipartUploadPartRequest` is a bearer credential. Its `Debug` output is
+  redacted; serialization deliberately exposes it for transport.
+- `MultipartPartReceipt` contains primitive wire values and must be converted
+  into a validated `UploadedPart` before completion.
+- `PartMd5` signs `Content-MD5` into `UploadPart`. R2 rejects a body whose MD5
+  differs before the part is committed.
+- `reconcile` treats R2 `ListParts` as authoritative and validates the number,
+  uniqueness, and planned byte length of every remote part.
+- `complete_verified` compares exact remote ETags with the proposed manifest
+  immediately before completion. It reduces stale-client errors but cannot
+  remove the distributed-systems ambiguity of a lost completion response.
+
+After an ambiguous completion response, applications should reconcile their
+own durable terminal state and use `HEAD` plus application-level object identity
+or checksum metadata. Finding an object at the same key is not by itself proof
+that a particular upload won a race.
+
 ## Dependency boundary
 
 R2's S3-compatible API and SigV4 behavior are delegated to `aws-sdk-s3`.

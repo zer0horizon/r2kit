@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use r2kit::{MultipartSessionSnapshot, PartNumber, R2Client, R2Config};
+use r2kit::{MultipartSessionSnapshot, PartMd5, PartNumber, R2Client, R2Config};
 
 fn offline_bucket() -> r2kit::Bucket {
     let config = R2Config::builder()
@@ -82,6 +82,51 @@ async fn rejects_invalid_presign_expiry_before_network() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn checksum_presign_requires_content_md5_and_exposes_a_redacted_protocol_dto() {
+    let bucket = offline_bucket();
+    let snapshot = MultipartSessionSnapshot::restore(
+        "r2kit",
+        "objects/checksummed.bin",
+        "checksum-upload-id",
+        5 * 1024 * 1024,
+        5 * 1024 * 1024,
+    )
+    .unwrap();
+    let session = bucket.resume_presigned_multipart(snapshot).unwrap();
+    let md5 = PartMd5::try_from("AAAAAAAAAAAAAAAAAAAAAA==").unwrap();
+    let part = session
+        .presign_part_with_md5(
+            PartNumber::try_from(1).unwrap(),
+            md5,
+            Duration::from_secs(900),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        part.content_md5().map(PartMd5::as_base64),
+        Some("AAAAAAAAAAAAAAAAAAAAAA==")
+    );
+    assert!(part.request().required_headers().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-md5") && value == "AAAAAAAAAAAAAAAAAAAAAA=="
+    }));
+
+    let protocol = part.into_protocol_request().unwrap();
+    assert_eq!(protocol.part_number(), 1);
+    assert_eq!(protocol.content_length(), 5 * 1024 * 1024);
+    assert_eq!(protocol.content_md5(), Some("AAAAAAAAAAAAAAAAAAAAAA=="));
+    assert!(protocol.expose_url().contains("X-Amz-Signature="));
+    assert!(!format!("{protocol:?}").contains("X-Amz-Signature"));
+}
+
+#[test]
+fn rejects_noncanonical_or_wrong_length_md5() {
+    assert!(PartMd5::try_from("not-base64").is_err());
+    assert!(PartMd5::try_from("YWJj").is_err());
+    assert!(PartMd5::try_from("AAAAAAAAAAAAAAAAAAAAAA").is_err());
 }
 
 #[tokio::test]
