@@ -12,7 +12,11 @@ use std::{
 
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_types::retry::RetryConfig;
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::{
+    StreamExt, TryStreamExt,
+    future::{Either, select},
+    stream,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 
@@ -335,10 +339,12 @@ impl ManagedMultipartBuilder {
         let run = self.run(&path, &session);
         let result = match self.cancellation.as_ref() {
             Some(cancellation) => {
-                tokio::select! {
-                    biased;
-                    result = run => result,
-                    () = cancellation.cancelled() => Err(Error::Cancelled),
+                let run = std::pin::pin!(run);
+                let cancelled = std::pin::pin!(cancellation.cancelled());
+
+                match select(run, cancelled).await {
+                    Either::Left((result, _)) => result,
+                    Either::Right(((), _)) => Err(Error::Cancelled),
                 }
             }
             None => run.await,

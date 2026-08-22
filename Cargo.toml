@@ -15,26 +15,26 @@ include = ["/src/**", "/tests/**", "/docs/**", "/Cargo.toml", "/README.md", "/LI
 
 [features]
 default = []
-live-tests = ["dep:reqwest", "dep:uuid"]
+live-tests = []
 serde = ["dep:serde"]
 
 [dependencies]
 aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-types = "1"
 bytes = "1"
-base64 = "0.22"
-futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 serde = { version = "1", features = ["derive"], optional = true }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "sync", "time"] }
-uuid = { version = "1", features = ["v4"], optional = true }
+tokio = { version = "1", default-features = false, features = ["fs", "io-util", "sync", "time"] }
 
 [dev-dependencies]
-md-5 = "0.10"
+md-5 = "0.11"
 proptest = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
 
 [[test]]
 name = "live_presigned_multipart"
