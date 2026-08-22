@@ -5,7 +5,7 @@ use std::fmt;
 pub enum ConfigError {
     /// A required configuration field was not supplied.
     MissingField(&'static str),
-    /// The Cloudflare account ID contained whitespace or was empty.
+    /// The Cloudflare account ID was not a 32-character hexadecimal identifier.
     InvalidAccountId,
     /// A supplied configuration field was empty.
     EmptyField(&'static str),
@@ -16,7 +16,10 @@ impl fmt::Display for ConfigError {
         match self {
             Self::MissingField(field) => write!(f, "missing required R2 configuration: {field}"),
             Self::InvalidAccountId => {
-                write!(f, "R2 account ID must not be empty or contain whitespace")
+                write!(
+                    f,
+                    "R2 account ID must be a 32-character hexadecimal identifier"
+                )
             }
             Self::EmptyField(field) => write!(f, "R2 configuration must not be empty: {field}"),
         }

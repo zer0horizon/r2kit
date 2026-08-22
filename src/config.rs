@@ -121,7 +121,7 @@ impl R2ConfigBuilder {
         let account_id = self
             .account_id
             .ok_or(ConfigError::MissingField("account_id"))?;
-        if account_id.is_empty() || account_id.chars().any(char::is_whitespace) {
+        if account_id.len() != 32 || !account_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(ConfigError::InvalidAccountId);
         }
 

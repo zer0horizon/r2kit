@@ -2,8 +2,9 @@ use r2kit::{ConfigError, R2Config};
 
 #[test]
 fn builds_r2_endpoint_and_auto_region() {
+    let account_id = "0123456789abcdef0123456789abcdef";
     let config = R2Config::builder()
-        .account_id("abc123")
+        .account_id(account_id)
         .access_key_id("access")
         .secret_access_key("secret")
         .build()
@@ -12,14 +13,14 @@ fn builds_r2_endpoint_and_auto_region() {
     assert_eq!(config.region(), "auto");
     assert_eq!(
         config.endpoint_url(),
-        "https://abc123.r2.cloudflarestorage.com"
+        format!("https://{account_id}.r2.cloudflarestorage.com")
     );
 }
 
 #[test]
 fn redacts_all_credentials_from_debug() {
     let config = R2Config::builder()
-        .account_id("abc123")
+        .account_id("0123456789abcdef0123456789abcdef")
         .access_key_id("visible-access-key")
         .secret_access_key("visible-secret-key")
         .session_token("visible-session-token")
@@ -41,4 +42,15 @@ fn rejects_an_invalid_account_id() {
         .expect_err("account IDs cannot contain whitespace");
 
     assert_eq!(error, ConfigError::InvalidAccountId);
+}
+
+#[test]
+fn rejects_a_non_hex_account_id() {
+    let result = R2Config::builder()
+        .account_id("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+        .access_key_id("access")
+        .secret_access_key("secret")
+        .build();
+
+    assert_eq!(result.unwrap_err(), ConfigError::InvalidAccountId);
 }

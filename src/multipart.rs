@@ -14,6 +14,7 @@ use crate::{Bucket, Error};
 
 const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
 const MAX_PARTS: u16 = 10_000;
 const MAX_KEY_BYTES: usize = 1_024;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -271,6 +272,30 @@ impl MultipartSessionSnapshot {
     pub fn expose_upload_id(&self) -> &str {
         &self.upload_id
     }
+
+    /// Returns the bucket owning this upload.
+    #[must_use]
+    pub fn bucket(&self) -> &str {
+        &self.bucket
+    }
+
+    /// Returns the destination object key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the complete object size in bytes.
+    #[must_use]
+    pub const fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Returns the uniform non-final part size in bytes.
+    #[must_use]
+    pub const fn part_size(&self) -> u64 {
+        self.part_size
+    }
 }
 
 impl fmt::Debug for MultipartSessionSnapshot {
@@ -298,6 +323,12 @@ impl MultipartPlan {
             return Err(Error::InvalidInput {
                 field: "file_size",
                 reason: "must be greater than zero for multipart upload",
+            });
+        }
+        if file_size > MAX_MULTIPART_OBJECT_SIZE {
+            return Err(Error::InvalidInput {
+                field: "file_size",
+                reason: "must not exceed R2's effective multipart object limit",
             });
         }
         if !(MIN_PART_SIZE..=MAX_PART_SIZE).contains(&part_size) {
@@ -604,7 +635,8 @@ fn validate_key(key: &str) -> Result<(), Error> {
 }
 
 fn validate_expiry(expires_in: Duration) -> Result<(), Error> {
-    if expires_in.is_zero() || expires_in.as_secs() > MAX_PRESIGN_SECONDS {
+    if expires_in < Duration::from_secs(1) || expires_in > Duration::from_secs(MAX_PRESIGN_SECONDS)
+    {
         return Err(Error::InvalidInput {
             field: "expires_in",
             reason: "must be between 1 second and 7 days",
@@ -635,6 +667,17 @@ mod tests {
     fn rejects_too_many_parts() {
         let result = MultipartPlan::new(10_001 * MIN_PART_SIZE, MIN_PART_SIZE);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_an_object_over_r2s_effective_limit() {
+        let result = MultipartPlan::new(MAX_MULTIPART_OBJECT_SIZE + 1, MAX_PART_SIZE);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_subsecond_presign_expiry() {
+        assert!(validate_expiry(Duration::from_millis(999)).is_err());
     }
 
     #[test]

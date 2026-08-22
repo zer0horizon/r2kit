@@ -4,8 +4,8 @@
 the official AWS S3 SDK and focuses on R2-native configuration, secret-safe
 debugging, and presigned multipart uploads for browser and mobile clients.
 
-> Early development: the current API is an M0 technical spike and is not yet
-> semver-stable.
+> Early development: the multipart compatibility spike has passed against live
+> R2, but the API is not yet semver-stable.
 
 ## Current capabilities
 
@@ -102,3 +102,11 @@ bucket.
 
 Bucket administration, ACLs, tagging, versioning, object lock, folder sync, a
 CLI, and a custom SigV4 implementation are deliberately out of scope.
+
+The architectural boundary and acceptance rule for future APIs are documented
+in [`docs/design.md`](docs/design.md).
+
+## License
+
+Licensed under either Apache License, Version 2.0 or the MIT license, at your
+option.
