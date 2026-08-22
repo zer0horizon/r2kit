@@ -277,19 +277,6 @@ pub struct ServiceError {
 }
 
 impl ServiceError {
-    #[cfg(test)]
-    pub(crate) const fn sanitized(
-        operation: &'static str,
-        kind: ServiceErrorKind,
-        status: Option<u16>,
-    ) -> Self {
-        Self {
-            operation,
-            kind,
-            status,
-        }
-    }
-
     /// Returns the stable AWS S3 operation name.
     #[must_use]
     pub const fn operation(&self) -> &'static str {
