@@ -34,6 +34,7 @@ Run these checks before opening a pull request:
 
 ```sh
 cargo fmt --all -- --check
+cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo test --doc --all-features

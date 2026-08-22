@@ -5,6 +5,7 @@ mode="${1:-full}"
 
 run_fast_checks() {
     cargo fmt-check
+    cargo lint-default
     cargo lint
 }
 
