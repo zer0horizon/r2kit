@@ -4,7 +4,7 @@ use std::{
 };
 
 use aws_sdk_s3::primitives::ByteStream;
-use r2kit::{ManagedUploadProgress, R2Client, R2Config};
+use r2kit::{Error, ManagedUploadCancellation, ManagedUploadProgress, R2Client, R2Config};
 
 const MIB: usize = 1024 * 1024;
 
@@ -188,6 +188,40 @@ async fn live_managed_failure_aborts_an_incompatible_session() {
         .send()
         .await;
     assert!(parts.is_err(), "aborted upload must no longer be listable");
+}
+
+#[tokio::test]
+#[ignore = "requires explicit bucket-scoped R2 credentials"]
+async fn live_managed_cancellation_aborts_the_remote_session() {
+    let client = live_client();
+    let bucket = client.bucket("r2kit-live-tests").unwrap();
+    let id = uuid::Uuid::new_v4();
+    let key = format!("_r2kit-tests/{id}/managed-cancel.bin");
+    let path = env::temp_dir().join(format!("r2kit-{id}-managed-cancel.bin"));
+    tokio::fs::write(&path, test_body()).await.unwrap();
+    let cancellation = ManagedUploadCancellation::new();
+    let cancel_after_first_part = cancellation.clone();
+
+    let error = bucket
+        .managed_multipart(&key)
+        .unwrap()
+        .part_size((5 * MIB) as u64)
+        .concurrency(1)
+        .cancellation_token(cancellation)
+        .on_progress(move |progress| {
+            if progress.completed_parts() == 1 {
+                cancel_after_first_part.cancel();
+            }
+        })
+        .upload_file(&path)
+        .await
+        .unwrap_err();
+    let _ = tokio::fs::remove_file(&path).await;
+
+    assert!(matches!(error.error(), Error::Cancelled));
+    assert!(error.was_aborted());
+    assert!(error.snapshot().is_none());
+    assert!(bucket.head(&key).await.is_err());
 }
 
 #[tokio::test]

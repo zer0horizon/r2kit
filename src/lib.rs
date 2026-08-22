@@ -18,7 +18,8 @@ pub use client::{Bucket, R2Client};
 pub use config::{R2Config, R2ConfigBuilder};
 pub use error::{ConfigError, Error};
 pub use managed::{
-    ManagedMultipartBuilder, ManagedUploadError, ManagedUploadProgress, ManagedUploadResult,
+    ManagedMultipartBuilder, ManagedUploadCancellation, ManagedUploadError, ManagedUploadProgress,
+    ManagedUploadResult,
 };
 pub use multipart::{
     CompletedObject, CompletionManifest, MultipartPartReceipt, MultipartReconciliation,

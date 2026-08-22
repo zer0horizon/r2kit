@@ -1,4 +1,4 @@
-use r2kit::{Error, MultipartSessionSnapshot, R2Client, R2Config};
+use r2kit::{Error, ManagedUploadCancellation, MultipartSessionSnapshot, R2Client, R2Config};
 
 fn offline_bucket() -> r2kit::Bucket {
     let config = R2Config::builder()
@@ -74,4 +74,27 @@ fn resumed_builder_redacts_the_upload_id() {
     let builder = bucket.resume_managed_multipart(snapshot).unwrap();
     let debug = format!("{builder:?}");
     assert!(!debug.contains("sensitive-managed-upload-id"));
+}
+
+#[tokio::test]
+async fn pre_cancelled_upload_never_starts_a_remote_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("cancelled.bin");
+    tokio::fs::write(&path, vec![0_u8; 5 * 1024 * 1024])
+        .await
+        .unwrap();
+    let cancellation = ManagedUploadCancellation::new();
+    cancellation.cancel();
+
+    let error = offline_bucket()
+        .managed_multipart("cancelled.bin")
+        .unwrap()
+        .cancellation_token(cancellation)
+        .upload_file(path)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error.error(), Error::Cancelled));
+    assert!(!error.was_aborted());
+    assert!(error.snapshot().is_none());
 }

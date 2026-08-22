@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    future::Future,
     path::Path,
     sync::{
         Arc,
@@ -10,8 +11,10 @@ use std::{
 };
 
 use aws_sdk_s3::primitives::ByteStream;
+use aws_smithy_types::retry::RetryConfig;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::sync::watch;
 
 use crate::{
     Bucket, CompletedObject, CompletionManifest, Error, MultipartSessionSnapshot, PartNumber,
@@ -25,6 +28,53 @@ const MAX_CONCURRENCY: usize = 64;
 const MAX_ATTEMPTS: u8 = 10;
 
 type ProgressCallback = Arc<dyn Fn(ManagedUploadProgress) + Send + Sync>;
+
+/// A cloneable signal for explicitly cancelling a managed multipart upload.
+///
+/// Cancellation is cooperative: pass a clone to the builder, call [`Self::cancel`],
+/// and continue awaiting `upload_file` so it can abort or return resumable state.
+#[derive(Clone, Debug)]
+pub struct ManagedUploadCancellation {
+    signal: watch::Sender<bool>,
+}
+
+impl ManagedUploadCancellation {
+    /// Creates a cancellation signal in the active state.
+    #[must_use]
+    pub fn new() -> Self {
+        let (signal, _) = watch::channel(false);
+        Self { signal }
+    }
+
+    /// Requests cancellation. Calling this method more than once is harmless.
+    pub fn cancel(&self) {
+        self.signal.send_replace(true);
+    }
+
+    /// Returns whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        *self.signal.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut receiver = self.signal.subscribe();
+        if *receiver.borrow_and_update() {
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                return;
+            }
+        }
+    }
+}
+
+impl Default for ManagedUploadCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A point-in-time progress update for a managed multipart upload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +213,7 @@ pub struct ManagedMultipartBuilder {
     abort_on_error: bool,
     resume: Option<MultipartSessionSnapshot>,
     progress: Option<ProgressCallback>,
+    cancellation: Option<ManagedUploadCancellation>,
 }
 
 impl fmt::Debug for ManagedMultipartBuilder {
@@ -176,6 +227,7 @@ impl fmt::Debug for ManagedMultipartBuilder {
             .field("abort_on_error", &self.abort_on_error)
             .field("resume", &self.resume)
             .field("progress", &self.progress.as_ref().map(|_| "callback"))
+            .field("cancellation", &self.cancellation.is_some())
             .finish()
     }
 }
@@ -219,6 +271,17 @@ impl ManagedMultipartBuilder {
         self
     }
 
+    /// Registers an explicit cooperative cancellation signal.
+    ///
+    /// With the default `abort_on_error(true)`, cancellation waits for a
+    /// best-effort remote abort before returning [`Error::Cancelled`]. If abort
+    /// fails, the returned error carries a snapshot for later cleanup or resume.
+    #[must_use]
+    pub fn cancellation_token(mut self, cancellation: ManagedUploadCancellation) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
     /// Uploads the local file, reusing validated remote parts when resuming.
     pub async fn upload_file(
         self,
@@ -236,6 +299,13 @@ impl ManagedMultipartBuilder {
                 field: "path",
                 reason: "must identify a regular file",
             }));
+        }
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(ManagedUploadCancellation::is_cancelled)
+        {
+            return Err(ManagedUploadError::before_start(Error::Cancelled));
         }
         let file_size = metadata.len();
 
@@ -262,7 +332,19 @@ impl ManagedMultipartBuilder {
                 .map_err(ManagedUploadError::before_start)?,
         };
 
-        match self.run(&path, &session).await {
+        let run = self.run(&path, &session);
+        let result = match self.cancellation.as_ref() {
+            Some(cancellation) => {
+                tokio::select! {
+                    biased;
+                    result = run => result,
+                    () = cancellation.cancelled() => Err(Error::Cancelled),
+                }
+            }
+            None => run.await,
+        };
+
+        match result {
             Ok(result) => Ok(result),
             Err(error) => Err(self.after_start_error(error, &session).await),
         }
@@ -466,6 +548,7 @@ impl Bucket {
             abort_on_error: true,
             resume: None,
             progress: None,
+            cancellation: None,
         })
     }
 
@@ -484,6 +567,7 @@ impl Bucket {
             abort_on_error: true,
             resume: Some(snapshot),
             progress: None,
+            cancellation: None,
         })
     }
 }
@@ -527,47 +611,80 @@ async fn upload_part_with_retry(
     max_attempts: u8,
 ) -> Result<UploadedPart, Error> {
     let bytes = bytes::Bytes::from(bytes);
+    let output = retry_with_policy(
+        max_attempts,
+        number,
+        || {
+            client
+                .upload_part()
+                .bucket(bucket)
+                .key(key)
+                .upload_id(upload_id)
+                .part_number(i32::from(number.get()))
+                .content_length(bytes.len() as i64)
+                .body(ByteStream::from(bytes.clone()))
+                .customize()
+                .config_override(
+                    aws_sdk_s3::Config::builder().retry_config(RetryConfig::disabled()),
+                )
+                .send()
+        },
+        is_retryable,
+        tokio::time::sleep,
+    )
+    .await
+    .map_err(|_| Error::Service {
+        operation: "UploadPart",
+    })?;
+    let etag = output.e_tag().ok_or(Error::Service {
+        operation: "UploadPart",
+    })?;
+    UploadedPart::new(number, etag)
+}
+
+async fn retry_with_policy<T, E, Operation, OperationFuture, Classify, Sleep, SleepFuture>(
+    max_attempts: u8,
+    number: PartNumber,
+    mut operation: Operation,
+    classify: Classify,
+    mut sleep: Sleep,
+) -> Result<T, E>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<T, E>>,
+    Classify: Fn(&E) -> bool,
+    Sleep: FnMut(Duration) -> SleepFuture,
+    SleepFuture: Future<Output = ()>,
+{
     for attempt in 1..=max_attempts {
-        let result = client
-            .upload_part()
-            .bucket(bucket)
-            .key(key)
-            .upload_id(upload_id)
-            .part_number(i32::from(number.get()))
-            .content_length(bytes.len() as i64)
-            .body(ByteStream::from(bytes.clone()))
-            .send()
-            .await;
-        match result {
-            Ok(output) => {
-                let etag = output.e_tag().ok_or(Error::Service {
-                    operation: "UploadPart",
-                })?;
-                return UploadedPart::new(number, etag);
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < max_attempts && classify(&error) => {
+                sleep(retry_delay(attempt, number)).await;
             }
-            Err(error) if attempt < max_attempts && is_retryable(&error) => {
-                tokio::time::sleep(retry_delay(attempt, number)).await;
-            }
-            Err(_) => {
-                return Err(Error::Service {
-                    operation: "UploadPart",
-                });
-            }
+            Err(error) => return Err(error),
         }
     }
-    Err(Error::Service {
-        operation: "UploadPart",
-    })
+    unreachable!("validated max_attempts is at least one")
 }
 
 fn is_retryable<E>(error: &aws_sdk_s3::error::SdkError<E>) -> bool {
-    match error.raw_response() {
-        Some(response) => {
-            let status = response.status().as_u16();
-            status == 408 || status == 429 || status >= 500
+    use aws_sdk_s3::error::SdkError;
+
+    match error {
+        SdkError::ConstructionFailure(_) => false,
+        SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_) => {
+            true
         }
-        None => true,
+        SdkError::ServiceError(_) => error
+            .raw_response()
+            .is_some_and(|response| is_retryable_status(response.status().as_u16())),
+        _ => false,
     }
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..=599).contains(&status)
 }
 
 fn retry_delay(attempt: u8, number: PartNumber) -> Duration {
@@ -598,7 +715,29 @@ fn planned_part_length(file_size: u64, part_size: u64, number: PartNumber) -> Re
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::VecDeque, future::ready};
+
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum InjectedFailure {
+        NoResponse,
+        Status(u16),
+    }
+
+    fn injected_retryable(error: &InjectedFailure) -> bool {
+        match error {
+            InjectedFailure::NoResponse => true,
+            InjectedFailure::Status(status) => is_retryable_status(*status),
+        }
+    }
+
+    fn run_async(future: impl Future<Output = ()>) {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
 
     #[test]
     fn retry_delay_is_bounded_and_part_specific() {
@@ -607,5 +746,126 @@ mod tests {
         assert!(first >= Duration::from_millis(250));
         assert!(second > first);
         assert!(retry_delay(10, PartNumber::try_from(1).unwrap()) < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn retry_status_matrix_is_deliberately_bounded() {
+        for retryable in [408, 429, 500, 502, 503, 599] {
+            assert!(injected_retryable(&InjectedFailure::Status(retryable)));
+        }
+        for terminal in [400, 401, 403, 404, 409, 499, 600] {
+            assert!(!injected_retryable(&InjectedFailure::Status(terminal)));
+        }
+        assert!(injected_retryable(&InjectedFailure::NoResponse));
+    }
+
+    #[test]
+    fn sdk_construction_failures_are_terminal_but_timeouts_retry() {
+        let construction: aws_sdk_s3::error::SdkError<std::io::Error> =
+            aws_sdk_s3::error::SdkError::construction_failure(std::io::Error::other("injected"));
+        let timeout: aws_sdk_s3::error::SdkError<std::io::Error> =
+            aws_sdk_s3::error::SdkError::timeout_error(std::io::Error::other("injected"));
+
+        assert!(!is_retryable(&construction));
+        assert!(is_retryable(&timeout));
+    }
+
+    #[test]
+    fn retry_runner_reaches_success_after_transient_faults() {
+        run_async(async {
+            let mut outcomes = VecDeque::from([
+                Err(InjectedFailure::Status(408)),
+                Err(InjectedFailure::Status(429)),
+                Err(InjectedFailure::Status(503)),
+                Ok("etag"),
+            ]);
+            let mut attempts = 0_u8;
+            let mut delays = Vec::new();
+            let result = retry_with_policy(
+                4,
+                PartNumber::try_from(3).unwrap(),
+                || {
+                    attempts += 1;
+                    ready(outcomes.pop_front().unwrap())
+                },
+                injected_retryable,
+                |delay| {
+                    delays.push(delay);
+                    ready(())
+                },
+            )
+            .await;
+
+            assert_eq!(result, Ok("etag"));
+            assert_eq!(attempts, 4);
+            assert_eq!(delays.len(), 3);
+            assert!(delays.windows(2).all(|pair| pair[0] < pair[1]));
+        });
+    }
+
+    #[test]
+    fn retry_runner_stops_on_terminal_fault() {
+        run_async(async {
+            let mut attempts = 0_u8;
+            let result = retry_with_policy(
+                10,
+                PartNumber::try_from(1).unwrap(),
+                || {
+                    attempts += 1;
+                    ready(Err::<(), _>(InjectedFailure::Status(403)))
+                },
+                injected_retryable,
+                |_| ready(()),
+            )
+            .await;
+
+            assert_eq!(result, Err(InjectedFailure::Status(403)));
+            assert_eq!(attempts, 1);
+        });
+    }
+
+    #[test]
+    fn retry_runner_honors_the_exact_attempt_limit() {
+        run_async(async {
+            let mut attempts = 0_u8;
+            let mut delays = 0_u8;
+            let result = retry_with_policy(
+                3,
+                PartNumber::try_from(1).unwrap(),
+                || {
+                    attempts += 1;
+                    ready(Err::<(), _>(InjectedFailure::NoResponse))
+                },
+                injected_retryable,
+                |_| {
+                    delays += 1;
+                    ready(())
+                },
+            )
+            .await;
+
+            assert_eq!(result, Err(InjectedFailure::NoResponse));
+            assert_eq!(attempts, 3);
+            assert_eq!(delays, 2);
+        });
+    }
+
+    #[test]
+    fn cancellation_wakes_all_waiters_and_is_idempotent() {
+        run_async(async {
+            let cancellation = ManagedUploadCancellation::new();
+            let first = cancellation.clone();
+            let second = cancellation.clone();
+            let first_waiter = tokio::spawn(async move { first.cancelled().await });
+            let second_waiter = tokio::spawn(async move { second.cancelled().await });
+
+            assert!(!cancellation.is_cancelled());
+            cancellation.cancel();
+            cancellation.cancel();
+            first_waiter.await.unwrap();
+            second_waiter.await.unwrap();
+            assert!(cancellation.is_cancelled());
+            cancellation.cancelled().await;
+        });
     }
 }

@@ -54,6 +54,8 @@ pub enum Error {
         /// Stable name of the file operation that failed.
         operation: &'static str,
     },
+    /// A caller explicitly cancelled an in-progress managed upload.
+    Cancelled,
     /// Presigning failed before a request was sent.
     Presign,
     /// A signed header could not be represented as text.
@@ -68,6 +70,7 @@ impl fmt::Display for Error {
             Self::Service { operation } => write!(f, "R2 operation failed: {operation}"),
             Self::NotFound => write!(f, "R2 object was not found"),
             Self::Io { operation } => write!(f, "local file operation failed: {operation}"),
+            Self::Cancelled => write!(f, "managed upload was cancelled"),
             Self::Presign => write!(f, "failed to create a presigned R2 request"),
             Self::InvalidSignedHeader => write!(f, "presigned request contains a non-text header"),
         }

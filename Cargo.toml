@@ -20,12 +20,13 @@ serde = ["dep:serde"]
 
 [dependencies]
 aws-sdk-s3 = { version = "=1.143.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-smithy-types = "1"
 bytes = "1"
 base64 = "0.22"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-tokio = { version = "1", features = ["fs", "io-util", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "sync", "time"] }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]

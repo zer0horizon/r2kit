@@ -160,6 +160,38 @@ By default, failures trigger a best-effort abort. Set `abort_on_error(false)`
 when the caller wants `ManagedUploadError::snapshot()` for a later resume. The
 source file must not change while an upload is running.
 
+Managed uploads own their `UploadPart` retry policy: network failures, HTTP 408,
+429, and 5xx responses are retried with bounded backoff. SDK retries are disabled
+for that operation so `max_attempts` is the exact request-attempt limit.
+
+For cooperative cancellation, attach a cloneable signal and keep awaiting the
+upload future while another task requests cancellation:
+
+```rust,no_run
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = r2kit::R2Client::from_env()?;
+let bucket = client.bucket("media")?;
+let cancellation = r2kit::ManagedUploadCancellation::new();
+let request = cancellation.clone();
+
+let upload = bucket
+    .managed_multipart("videos/demo.mp4")?
+    .cancellation_token(cancellation)
+    .upload_file("videos/demo.mp4");
+
+// A signal handler or another task can call this at any time.
+request.cancel();
+let error = upload.await.unwrap_err();
+assert!(matches!(error.error(), r2kit::Error::Cancelled));
+# Ok(())
+# }
+```
+
+With the default `abort_on_error(true)`, cancellation waits for a best-effort R2
+abort. If cleanup fails, `ManagedUploadError::snapshot()` retains the session so
+the caller can retry cleanup or resume. Dropping the upload future cannot perform
+asynchronous cleanup; signal cancellation and continue awaiting it instead.
+
 ## Configuration
 
 ```text
