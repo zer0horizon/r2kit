@@ -72,6 +72,7 @@ mod tests {
         Event, Metadata, Subscriber,
         field::{Field, Visit},
         span::{Attributes, Id, Record},
+        subscriber::Interest,
     };
 
     use super::*;
@@ -94,6 +95,13 @@ mod tests {
     }
 
     impl Subscriber for Capture {
+        fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+            // The retry callsite is also exercised by parallel unit tests that
+            // run without a subscriber. Never let their cached interest decide
+            // whether this scoped capture receives the event.
+            Interest::sometimes()
+        }
+
         fn enabled(&self, _: &Metadata<'_>) -> bool {
             true
         }
