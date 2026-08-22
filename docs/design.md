@@ -25,6 +25,19 @@ only when it provides at least one of:
 - Live tests use a dedicated bucket, randomized object prefixes, and best-effort
   cleanup. Pull requests do not receive live credentials.
 
+## Client configuration invariants
+
+- The signing region is always `auto` when `R2Client` is built from `R2Config`.
+- The endpoint is derived from the validated account ID and the typed
+  `R2Jurisdiction`; arbitrary endpoint injection is reserved for `from_sdk`.
+- Zero timeouts and retry limits are rejected before an SDK client is created.
+- An operation-attempt timeout cannot exceed the total operation timeout.
+- Unset transport options preserve AWS SDK defaults for backward compatibility.
+- SDK retry limits apply to ordinary operations. Managed multipart part uploads
+  disable SDK retries and enforce their own exact attempt count.
+- `from_sdk` is an explicit unchecked boundary: the caller owns endpoint,
+  region, credentials, transport, and retry correctness.
+
 ## Production multipart protocol
 
 The trusted signer owns session creation, persistence, reconciliation,

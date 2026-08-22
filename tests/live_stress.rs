@@ -7,14 +7,18 @@ use r2kit::{R2Client, R2Config};
 
 const MIB: usize = 1024 * 1024;
 
-fn deep_live_client() -> R2Client {
+fn deep_live_client() -> Option<R2Client> {
+    if env::var("R2KIT_DEEP_LIVE_TESTS").as_deref() != Ok("1") {
+        return None;
+    }
     assert_eq!(env::var("R2KIT_LIVE_TESTS").as_deref(), Ok("1"));
-    assert_eq!(env::var("R2KIT_DEEP_LIVE_TESTS").as_deref(), Ok("1"));
     assert_eq!(
         env::var("R2KIT_LIVE_BUCKET").as_deref(),
         Ok("r2kit-live-tests")
     );
-    R2Client::new(R2Config::from_env().expect("R2 live credentials are required"))
+    Some(R2Client::new(
+        R2Config::from_env().expect("R2 live credentials are required"),
+    ))
 }
 
 fn deterministic_bytes(length: usize) -> Vec<u8> {
@@ -32,7 +36,9 @@ fn deterministic_bytes(length: usize) -> Vec<u8> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires explicit deep live testing against dedicated R2 credentials"]
 async fn live_parallel_64_mib_upload_is_exact_and_progress_is_monotonic() {
-    let client = deep_live_client();
+    let Some(client) = deep_live_client() else {
+        return;
+    };
     let bucket = client.bucket("r2kit-live-tests").unwrap();
     let key = format!("_r2kit-tests/{}/stress.bin", uuid::Uuid::new_v4());
     let expected = deterministic_bytes(64 * MIB);

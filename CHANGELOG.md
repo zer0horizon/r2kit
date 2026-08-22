@@ -11,6 +11,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - R2-native client and bucket configuration.
+- Typed default, EU, US, and FedRAMP jurisdiction endpoints.
+- Validated connection, read, operation, and per-attempt timeouts plus SDK
+  request-attempt configuration.
 - Core object PUT, GET, HEAD, LIST, and DELETE operations.
 - Presigned single-object and multipart upload flows.
 - Resumable managed multipart file uploads with bounded concurrency, exact

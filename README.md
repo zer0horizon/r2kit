@@ -44,6 +44,7 @@ export R2_ACCOUNT_ID="your-32-character-account-id"
 export R2_ACCESS_KEY_ID="your-access-key-id"
 export R2_SECRET_ACCESS_KEY="your-secret-access-key"
 # export R2_SESSION_TOKEN="..." # only for temporary credentials
+# export R2_JURISDICTION="eu"   # default, eu, us, or fedramp
 ```
 
 Upload, inspect, download, list, and delete an object:
@@ -72,6 +73,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Client configuration
+
+The default jurisdiction uses
+`https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Buckets with a data-residency
+jurisdiction require the matching `eu`, `us`, or `fedramp` endpoint. A
+jurisdiction is not a bucket location hint and does not change the signing
+region, which remains `auto`.
+
+Use explicit configuration when an application needs transport bounds or SDK
+retry control:
+
+```rust,no_run
+use std::time::Duration;
+
+use r2kit::{R2Client, R2Config, R2Jurisdiction};
+
+fn client() -> Result<R2Client, r2kit::ConfigError> {
+    let config = R2Config::builder()
+        .account_id("0123456789abcdef0123456789abcdef")
+        .access_key_id("access-key-id")
+        .secret_access_key("secret-access-key")
+        .jurisdiction(R2Jurisdiction::Eu)
+        .connect_timeout(Duration::from_secs(5))
+        .read_timeout(Duration::from_secs(30))
+        .operation_attempt_timeout(Duration::from_secs(45))
+        .operation_timeout(Duration::from_secs(120))
+        .sdk_max_attempts(3)
+        .build()?;
+
+    Ok(R2Client::new(config))
+}
+```
+
+Timeouts must be non-zero, and the per-attempt timeout cannot exceed the total
+operation timeout. `sdk_max_attempts` includes the initial request. It controls
+ordinary AWS SDK operations; managed multipart `UploadPart` requests disable
+SDK retries and use `ManagedMultipartBuilder::max_attempts` as their exact
+limit.
+
+Leaving a transport option unset preserves the AWS SDK default. For custom
+credential providers, HTTP clients, proxies, endpoint resolvers, or other
+advanced SDK behavior, construct `aws_sdk_s3::Client` yourself and pass it to
+`R2Client::from_sdk`. That escape hatch cannot verify the R2 endpoint, `auto`
+region, credentials, timeouts, or retry policy, so the caller owns those
+invariants.
 
 ## Choose the right API
 

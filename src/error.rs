@@ -10,6 +10,16 @@ pub enum ConfigError {
     InvalidAccountId,
     /// A supplied configuration field was empty.
     EmptyField(&'static str),
+    /// An environment variable could not be represented as Unicode.
+    InvalidEnvironment(&'static str),
+    /// The configured R2 jurisdiction was not recognized.
+    InvalidJurisdiction,
+    /// A timeout was zero and would make requests fail immediately.
+    InvalidTimeout(&'static str),
+    /// An attempt limit was zero.
+    InvalidAttempts(&'static str),
+    /// The per-attempt timeout exceeded the total operation timeout.
+    InconsistentTimeouts,
 }
 
 impl fmt::Display for ConfigError {
@@ -23,6 +33,23 @@ impl fmt::Display for ConfigError {
                 )
             }
             Self::EmptyField(field) => write!(f, "R2 configuration must not be empty: {field}"),
+            Self::InvalidEnvironment(field) => {
+                write!(f, "R2 environment variable is not valid Unicode: {field}")
+            }
+            Self::InvalidJurisdiction => write!(
+                f,
+                "R2 jurisdiction must be one of: default, eu, us, fedramp"
+            ),
+            Self::InvalidTimeout(field) => {
+                write!(f, "R2 timeout must be greater than zero: {field}")
+            }
+            Self::InvalidAttempts(field) => {
+                write!(f, "R2 attempt limit must be at least one: {field}")
+            }
+            Self::InconsistentTimeouts => write!(
+                f,
+                "R2 operation_attempt_timeout must not exceed operation_timeout"
+            ),
         }
     }
 }

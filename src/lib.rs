@@ -11,7 +11,7 @@ mod object;
 mod validation;
 
 pub use client::{Bucket, R2Client};
-pub use config::{R2Config, R2ConfigBuilder};
+pub use config::{R2Config, R2ConfigBuilder, R2Jurisdiction};
 pub use error::{ConfigError, Error};
 pub use managed::{
     ManagedMultipartBuilder, ManagedUploadCancellation, ManagedUploadError, ManagedUploadProgress,

@@ -4,6 +4,9 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
 fn async_handles_are_send_and_sync() {
+    assert_send_sync::<r2kit::R2Config>();
+    assert_send_sync::<r2kit::R2ConfigBuilder>();
+    assert_send_sync::<r2kit::R2Jurisdiction>();
     assert_send_sync::<r2kit::R2Client>();
     assert_send_sync::<r2kit::Bucket>();
     assert_send_sync::<r2kit::ManagedUploadCancellation>();
