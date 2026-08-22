@@ -201,6 +201,27 @@ The test only writes under `_r2kit-tests/<random-id>/`, aborts the active upload
 and deletes the completed object during cleanup. It never creates or deletes a
 bucket.
 
+For deeper protocol verification, run the property suite and the bounded fuzz
+target:
+
+```sh
+cargo test --all-features --test property_multipart
+cargo +nightly fuzz run protocol_boundaries -- -max_total_time=60
+```
+
+The opt-in stress test transfers a deterministic 64 MiB object with eight
+parallel multipart workers, verifies progress ordering and downloads the object
+for a byte-for-byte comparison. It uses the same dedicated bucket and prefix as
+the other live tests, and deletes the object after a successful assertion:
+
+```sh
+R2KIT_LIVE_TESTS=1 \
+R2KIT_DEEP_LIVE_TESTS=1 \
+R2KIT_LIVE_BUCKET=r2kit-live-tests \
+cargo test --features live-tests --test live_stress \
+  -- --ignored --test-threads=1
+```
+
 ## Non-goals for v0.1
 
 Bucket administration, ACLs, tagging, versioning, object lock, folder sync, a

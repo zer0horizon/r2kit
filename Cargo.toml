@@ -30,7 +30,9 @@ uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 md-5 = "0.10"
+proptest = "1"
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [[test]]
@@ -46,6 +48,11 @@ required-features = ["live-tests"]
 [[test]]
 name = "live_managed"
 path = "tests/live_managed.rs"
+required-features = ["live-tests"]
+
+[[test]]
+name = "live_stress"
+path = "tests/live_stress.rs"
 required-features = ["live-tests"]
 
 [package.metadata.docs.rs]
