@@ -1,5 +1,15 @@
 use r2kit::{CompletionManifest, MultipartPartReceipt, MultipartSessionSnapshot};
 
+fn assert_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn async_handles_are_send_and_sync() {
+    assert_send_sync::<r2kit::R2Client>();
+    assert_send_sync::<r2kit::Bucket>();
+    assert_send_sync::<r2kit::ManagedUploadCancellation>();
+    assert_send_sync::<r2kit::PresignedMultipart>();
+}
+
 #[test]
 fn multipart_snapshot_exposes_every_persistence_field_deliberately() {
     let snapshot = MultipartSessionSnapshot::restore(

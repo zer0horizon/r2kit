@@ -11,7 +11,7 @@ documentation = "https://docs.rs/r2kit"
 readme = "README.md"
 keywords = ["cloudflare", "r2", "s3", "storage"]
 categories = ["api-bindings", "web-programming"]
-include = ["/src/**", "/tests/**", "/docs/**", "/Cargo.toml", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+include = ["/src/**", "/tests/**", "/examples/**", "/docs/**", "/Cargo.toml", "/CHANGELOG.md", "/CONTRIBUTING.md", "/README.md", "/SECURITY.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [features]
 default = []

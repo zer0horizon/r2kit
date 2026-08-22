@@ -15,11 +15,36 @@ cargo test --all-targets --all-features
 cargo test --doc --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 cargo package
+cargo deny check advisories bans licenses sources
 ```
 
 Live tests require bucket-scoped Object Read & Write credentials and are never
 run automatically for pull requests. See the README for the explicit opt-in
 command and dedicated bucket requirements.
+
+Run the live contract suite against the dedicated test bucket:
+
+```sh
+R2KIT_LIVE_TESTS=1 \
+R2KIT_LIVE_BUCKET=r2kit-live-tests \
+cargo test --features live-tests -- --ignored --test-threads=1
+```
+
+The deeper stress test transfers and verifies a deterministic 64 MiB object:
+
+```sh
+R2KIT_LIVE_TESTS=1 \
+R2KIT_DEEP_LIVE_TESTS=1 \
+R2KIT_LIVE_BUCKET=r2kit-live-tests \
+cargo test --features live-tests --test live_stress \
+  -- --ignored --test-threads=1
+```
+
+For protocol fuzzing, install `cargo-fuzz` and run:
+
+```sh
+cargo +nightly fuzz run protocol_boundaries -- -max_total_time=60
+```
 
 ## API expectations
 
@@ -30,6 +55,8 @@ command and dedicated bucket requirements.
 - Add offline contract tests for public behavior and a live R2 test for any
   compatibility claim that cannot be proven locally.
 - Public API changes require documentation and must respect the declared MSRV.
+- Pull requests are checked for accidental SemVer-breaking API changes against
+  their target branch.
 
 By contributing, you agree that your work is licensed under either Apache-2.0
 or MIT, at the user's option.

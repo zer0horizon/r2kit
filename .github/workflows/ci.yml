@@ -36,3 +36,26 @@ jobs:
         with:
           toolchain: 1.94.1
       - run: cargo check --all-features
+
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  semver:
+    name: Public API / SemVer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: r2kit
+          feature-group: all-features
+          baseline-rev: ${{ github.event.pull_request.base.sha }}

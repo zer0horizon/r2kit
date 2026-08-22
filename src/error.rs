@@ -2,6 +2,7 @@ use std::fmt;
 
 /// A configuration value required to create an R2 client was absent or invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A required configuration field was not supplied.
     MissingField(&'static str),
