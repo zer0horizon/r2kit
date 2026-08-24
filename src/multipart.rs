@@ -11,7 +11,7 @@ use aws_sdk_s3::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-use crate::{Bucket, Error, ValidationError, validation};
+use crate::{Bucket, Error, ObjectUploadOptions, ValidationError, validation};
 
 // https://developers.cloudflare.com/r2/platform/limits/
 const MAX_MULTIPART_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 * 1024;
@@ -690,6 +690,13 @@ impl MultipartReconciliation {
         self.uploaded_parts.iter()
     }
 
+    /// Consumes the reconciliation and returns uploaded parts in ascending
+    /// part-number order.
+    #[must_use]
+    pub fn into_uploaded_parts(self) -> Vec<UploadedPart> {
+        self.uploaded_parts
+    }
+
     /// Returns planned parts that R2 has not received yet.
     pub fn missing_parts(&self) -> impl ExactSizeIterator<Item = PartNumber> + '_ {
         self.missing_parts.iter().copied()
@@ -720,9 +727,66 @@ pub struct PresignedMultipartBuilder {
     key: String,
     file_size: Option<u64>,
     part_size: Option<u64>,
+    options: ObjectUploadOptions,
 }
 
 impl PresignedMultipartBuilder {
+    /// Sets typed metadata stored on the completed object.
+    #[must_use]
+    pub fn upload_options(mut self, options: ObjectUploadOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Sets the completed object's MIME media type.
+    #[must_use]
+    pub fn content_type(mut self, value: mime::Mime) -> Self {
+        self.options = self.options.with_content_type(value);
+        self
+    }
+
+    /// Sets the completed object's typed HTTP cache policy.
+    #[must_use]
+    pub fn cache_control(mut self, value: headers::CacheControl) -> Self {
+        self.options = self.options.with_cache_control(value);
+        self
+    }
+
+    /// Sets the completed object's content disposition.
+    #[must_use]
+    pub fn content_disposition(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_disposition(value);
+        self
+    }
+
+    /// Sets the completed object's content encoding.
+    #[must_use]
+    pub fn content_encoding(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_encoding(value);
+        self
+    }
+
+    /// Sets the completed object's content language.
+    #[must_use]
+    pub fn content_language(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_language(value);
+        self
+    }
+
+    /// Sets the completed object's HTTP expiration time.
+    #[must_use]
+    pub fn expires(mut self, value: SystemTime) -> Self {
+        self.options = self.options.with_expires(value);
+        self
+    }
+
+    /// Adds user-defined metadata to the completed object.
+    #[must_use]
+    pub fn custom_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options = self.options.with_custom_metadata(key, value);
+        self
+    }
+
     /// Sets the complete object size in bytes.
     ///
     /// This is required because r2kit plans every part before creating the
@@ -760,6 +824,7 @@ impl PresignedMultipartBuilder {
 
     /// Creates the remote multipart upload after local validation succeeds.
     pub async fn create(self) -> Result<PresignedMultipart, Error> {
+        self.options.validate()?;
         let plan = MultipartPlan::new(
             self.file_size.ok_or(Error::InvalidInput {
                 field: "file_size",
@@ -777,6 +842,13 @@ impl PresignedMultipartBuilder {
             .create_multipart_upload()
             .bucket(&self.bucket.name)
             .key(&self.key)
+            .set_content_type(self.options.content_type_value())
+            .set_cache_control(self.options.cache_control_value())
+            .set_content_disposition(self.options.content_disposition_value())
+            .set_content_encoding(self.options.content_encoding_value())
+            .set_content_language(self.options.content_language_value())
+            .set_expires(self.options.expires_value())
+            .set_metadata(self.options.custom_metadata_values())
             .send()
             .await
             .map_err(|error| Error::remote("CreateMultipartUpload", &error))?;
@@ -877,7 +949,9 @@ impl PresignedMultipart {
     /// the exact size required by the original upload plan.
     pub async fn reconcile(&self) -> Result<MultipartReconciliation, Error> {
         let mut marker = None;
-        let mut uploaded = BTreeMap::new();
+        let mut uploaded: Vec<Option<UploadedPart>> = std::iter::repeat_with(|| None)
+            .take(usize::from(self.plan.part_count))
+            .collect();
         loop {
             let output = self
                 .bucket
@@ -920,7 +994,8 @@ impl PresignedMultipart {
                     operation: "ListParts",
                 })?;
                 let part = UploadedPart::new(number, etag)?;
-                if uploaded.insert(number, part).is_some() {
+                let slot = &mut uploaded[usize::from(number.get() - 1)];
+                if slot.replace(part).is_some() {
                     return Err(Error::InvalidInput {
                         field: "remote_parts",
                         reason: "contains a duplicate part number",
@@ -938,14 +1013,18 @@ impl PresignedMultipart {
             }
         }
 
-        let missing_parts = (1..=self.plan.part_count)
-            .filter_map(|number| {
-                let number = PartNumber::try_from(number).expect("planned part numbers are valid");
-                (!uploaded.contains_key(&number)).then_some(number)
-            })
-            .collect();
+        let mut uploaded_parts = Vec::with_capacity(uploaded.len());
+        let mut missing_parts = Vec::new();
+        for (index, part) in uploaded.into_iter().enumerate() {
+            match part {
+                Some(part) => uploaded_parts.push(part),
+                None => missing_parts.push(
+                    PartNumber::try_from(index as u16 + 1).expect("planned part numbers are valid"),
+                ),
+            }
+        }
         Ok(MultipartReconciliation {
-            uploaded_parts: uploaded.into_values().collect(),
+            uploaded_parts,
             missing_parts,
         })
     }
@@ -1082,6 +1161,7 @@ impl Bucket {
             key,
             file_size: None,
             part_size: None,
+            options: ObjectUploadOptions::default(),
         })
     }
 

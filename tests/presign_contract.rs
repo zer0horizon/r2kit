@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use r2kit::{
-    Error, MultipartSessionSnapshot, PartMd5, PartNumber, R2Client, R2Config, ValidationError,
+    CacheControl, Error, MultipartSessionSnapshot, ObjectUploadOptions, PartMd5, PartNumber,
+    R2Client, R2Config, ValidationError, mime,
 };
 
 fn offline_bucket() -> r2kit::Bucket {
@@ -160,6 +161,113 @@ async fn presigns_single_get_and_put_with_redacted_bearer_urls() {
     assert_eq!(put.request().method(), "PUT");
     assert!(put.request().url().expose().contains("X-Amz-Signature="));
     assert!(!format!("{put:?}").contains("X-Amz-Signature"));
+}
+
+#[tokio::test]
+async fn presigned_put_signs_typed_object_metadata_as_required_headers() {
+    let bucket = offline_bucket();
+    let options = ObjectUploadOptions::builder()
+        .content_type(mime::IMAGE_JPEG)
+        .cache_control(
+            CacheControl::new()
+                .with_public()
+                .with_max_age(Duration::from_secs(3_600)),
+        )
+        .build();
+    let put = bucket
+        .presign_put_with_options("photos/cat.jpg", 42, Duration::from_secs(900), options)
+        .await
+        .unwrap();
+    let headers: Vec<_> = put.request().required_headers().collect();
+
+    assert!(headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type") && *value == "image/jpeg"
+    }));
+    assert!(headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("cache-control")
+            && value.contains("public")
+            && value.contains("max-age=3600")
+    }));
+    let url = put.request().url().expose();
+    assert!(url.contains("X-Amz-SignedHeaders="));
+    assert!(!format!("{put:?}").contains("X-Amz-Signature"));
+}
+
+#[tokio::test]
+async fn presigned_put_signs_extended_headers_and_custom_metadata() {
+    let bucket = offline_bucket();
+    let expires = UNIX_EPOCH + Duration::from_secs(1_893_456_000);
+    let options = ObjectUploadOptions::builder()
+        .content_disposition("attachment; filename=report.csv")
+        .content_encoding("gzip")
+        .content_language("en-US")
+        .expires(expires)
+        .custom_metadata("tenant-id", "tenant-42")
+        .build();
+    let put = bucket
+        .presign_put_with_options(
+            "reports/report.csv.gz",
+            42,
+            Duration::from_secs(900),
+            options,
+        )
+        .await
+        .unwrap();
+    let headers: Vec<_> = put.request().required_headers().collect();
+
+    for (name, expected) in [
+        ("content-disposition", "attachment; filename=report.csv"),
+        ("content-encoding", "gzip"),
+        ("content-language", "en-US"),
+        ("x-amz-meta-tenant-id", "tenant-42"),
+    ] {
+        assert!(
+            headers
+                .iter()
+                .any(|(actual, value)| actual.eq_ignore_ascii_case(name) && *value == expected),
+            "missing signed header {name}"
+        );
+    }
+    assert!(
+        headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("expires"))
+    );
+}
+
+#[tokio::test]
+async fn rejects_invalid_upload_metadata_before_signing() {
+    let bucket = offline_bucket();
+    let duplicate = ObjectUploadOptions::builder()
+        .custom_metadata("Tenant", "one")
+        .custom_metadata("tenant", "two")
+        .build();
+    let error = bucket
+        .presign_put_with_options("key", 1, Duration::from_secs(60), duplicate)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidInput {
+            field: "custom_metadata",
+            ..
+        }
+    ));
+
+    let prefixed = ObjectUploadOptions::builder()
+        .custom_metadata("x-amz-meta-tenant", "one")
+        .build();
+    let error = bucket
+        .presign_put_with_options("key", 1, Duration::from_secs(60), prefixed)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidInput {
+            field: "custom_metadata",
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

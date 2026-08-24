@@ -14,10 +14,12 @@ mod validation;
 pub use client::{Bucket, R2Client};
 pub use config::{R2Config, R2ConfigBuilder, R2Jurisdiction};
 pub use error::{ConfigError, Error, ServiceError, ServiceErrorKind, ValidationError};
+pub use headers::CacheControl;
 pub use managed::{
     ManagedMultipartBuilder, ManagedUploadCancellation, ManagedUploadError, ManagedUploadProgress,
     ManagedUploadResult,
 };
+pub use mime::{self, Mime};
 pub use multipart::{
     CompletedObject, CompletionManifest, MultipartPartReceipt, MultipartReconciliation,
     MultipartSessionRecord, MultipartSessionSnapshot, MultipartUploadPartRequest, PartMd5,
@@ -25,6 +27,7 @@ pub use multipart::{
     PresignedUploadPart, SecretUrl, UploadedPart,
 };
 pub use object::{
-    DownloadedObject, ListObjectsBuilder, ObjectMetadata, ObjectPage, ObjectSummary,
-    PresignedPutObject, PutObjectResult,
+    BatchDeleteError, DeleteObjectFailure, DeleteObjectsResult, DownloadedObject,
+    ListObjectsBuilder, ObjectMetadata, ObjectPage, ObjectSummary, ObjectUploadOptions,
+    ObjectUploadOptionsBuilder, PresignedPutObject, PutObjectResult,
 };

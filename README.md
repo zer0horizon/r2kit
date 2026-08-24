@@ -147,6 +147,94 @@ async fn main() -> Result<(), r2kit::Error> {
 }
 ```
 
+## Typed object metadata
+
+Use ecosystem media and header types instead of assembling security-sensitive
+HTTP values by hand. Existing upload methods keep their metadata-free behavior;
+the options variants opt into metadata explicitly.
+
+```rust,no_run
+use std::time::Duration;
+
+use r2kit::{CacheControl, ObjectUploadOptions, R2Client, mime};
+
+#[tokio::main]
+async fn main() -> Result<(), r2kit::Error> {
+    let bucket = R2Client::from_env()?.bucket("media")?;
+    let options = ObjectUploadOptions::builder()
+        .content_type(mime::IMAGE_JPEG)
+        .cache_control(
+            CacheControl::new()
+                .with_public()
+                .with_max_age(Duration::from_secs(3_600)),
+        )
+        .content_disposition("attachment; filename=cat.jpg")
+        .content_language("en")
+        .custom_metadata("tenant-id", "tenant-42")
+        .build();
+
+    bucket
+        .put_bytes_with_options("photos/cat.jpg", vec![], options)
+        .await?;
+    Ok(())
+}
+```
+
+For a presigned single PUT, typed metadata becomes part of the signature. The
+uploader must replay every header in `PresignedRequest::required_headers`
+exactly, and the bucket CORS policy must allow those headers. Multipart metadata
+is applied by the trusted server during `CreateMultipartUpload`; individual
+`UploadPart` requests do not repeat it.
+
+Custom metadata keys omit the `x-amz-meta-` prefix and are canonicalized to
+lowercase. r2kit accepts portable ASCII metadata keys and values, rejects
+case-insensitive duplicates, and validates R2's 8,192-byte metadata limit
+before network I/O. Content languages are validated structurally as one or more
+comma-separated BCP 47 language tags; registry-level language policy remains an
+application concern.
+
+The core crate does not infer a MIME type from a filename. Browser applications
+should validate and parse `File.type`; local-file applications may deliberately
+use an extension-based helper such as `mime_guess` when guessing is acceptable.
+
+## Paginated listings and batch deletion
+
+`send()` intentionally fetches one bounded listing page. Use `into_pages()` to
+follow continuation tokens automatically while preserving page boundaries and
+common prefixes. Stream extension methods require `futures-util` in the
+application.
+
+```rust,no_run
+use futures_util::TryStreamExt;
+use r2kit::R2Client;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bucket = R2Client::from_env()?.bucket("media")?;
+    let pages: Vec<_> = bucket
+        .list()
+        .prefix("temporary/")
+        .into_pages()
+        .try_collect()
+        .await?;
+
+    let keys = pages
+        .iter()
+        .flat_map(|page| page.objects())
+        .map(|object| object.key().to_owned());
+    let deleted = bucket.delete_objects(keys).await?;
+    for failure in deleted.failures() {
+        eprintln!("could not delete {}: {:?}", failure.key(), failure.code());
+    }
+    Ok(())
+}
+```
+
+`delete_objects` validates every key before deleting anything, sends sequential
+batches of at most 1,000 keys, and reports service-level failures per key. A
+request-level `BatchDeleteError` retains results from batches that had already
+completed.
+
 ## Managed file uploads
 
 Managed uploads split a local file into R2-compatible parts, upload them in
@@ -180,13 +268,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The uploader owns the `UploadPart` retry policy. Network failures, HTTP 408,
-429, and 5xx responses are retried with bounded backoff. AWS SDK retries are
-disabled for that operation, so `max_attempts` is the exact request-attempt
-limit.
+429, and 5xx responses are retried with exponential full jitter capped at 30
+seconds. Numeric `Retry-After` seconds and AWS-compatible
+`x-amz-retry-after` milliseconds raise the delay up to that cap. AWS SDK
+retries are disabled for that operation, so `max_attempts` is the exact
+request-attempt limit.
+
+Each in-flight part is buffered in memory. Before opening the file or contacting
+R2, the builder verifies that `part_size * concurrency` fits the 256 MiB default
+part-buffer budget. Configure an intentional larger bound with
+`max_buffered_bytes` or `max_buffered_mib`; this controls payload buffers rather
+than all process or SDK overhead.
 
 Failures trigger a best-effort abort by default. Use `abort_on_error(false)` to
 retain `ManagedUploadError::snapshot()` for a later resume. The source file must
-not change while an upload is running.
+not change while an upload is running. r2kit compares its size, modification
+time, and file identity where supported before completion, but applications
+should still treat immutability as a caller-owned invariant.
 
 ### Cancellation
 
@@ -214,6 +312,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Dropping the future cannot perform asynchronous cleanup. Signal cancellation
 and keep awaiting it instead.
+
+### Lifecycle policies and cleanup
+
+Cloudflare R2 automatically aborts incomplete multipart uploads seven days
+after initiation by default. Treat that bucket lifecycle rule as a final safety
+net rather than the primary cleanup path: keep awaiting cooperative cancellation
+so r2kit can abort promptly. Verify that the default rule remains enabled, or
+configure a shorter interval when abandoned uploads should be reclaimed sooner.
 
 ## Direct browser and mobile uploads
 
@@ -355,7 +461,8 @@ presigned URLs, and signed headers are excluded.
   possible.
 - R2 multipart plans enforce 5 MiB through 5 GiB parts, at most 10,000 parts,
   equal non-final part sizes, and the effective multipart object limit.
-- Managed uploads use bounded concurrency and an exact retry limit.
+- Managed uploads use bounded concurrency, a configurable part-buffer memory
+  budget, capped full-jitter retries, and an exact retry limit.
 - Applications still own authorization, rate limiting, CORS policy, and the
   lifecycle policy for abandoned uploads.
 

@@ -78,6 +78,39 @@ async fn rejects_invalid_managed_limits_before_file_or_network_io() {
             ..
         })
     ));
+
+    let memory_budget = bucket
+        .managed_multipart("object.bin")
+        .unwrap()
+        .part_size_mib(64)
+        .concurrency(8)
+        .max_buffered_mib(256)
+        .upload_file("path-does-not-exist")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        memory_budget.error(),
+        Error::Validation(ValidationError::ManagedMemoryBudgetExceeded {
+            required: 536_870_912,
+            max: 268_435_456,
+        })
+    ));
+
+    let exact_memory_budget = bucket
+        .managed_multipart("object.bin")
+        .unwrap()
+        .part_size_mib(64)
+        .concurrency(4)
+        .max_buffered_mib(256)
+        .upload_file("path-does-not-exist")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        exact_memory_budget.error(),
+        Error::Io {
+            operation: "metadata"
+        }
+    ));
 }
 
 #[test]

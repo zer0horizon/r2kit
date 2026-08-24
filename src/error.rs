@@ -115,6 +115,13 @@ pub enum ValidationError {
         /// Maximum accepted total attempt count.
         max: u8,
     },
+    /// A managed upload could buffer more bytes than its configured budget.
+    ManagedMemoryBudgetExceeded {
+        /// Maximum bytes required by the configured part size and concurrency.
+        required: u64,
+        /// Maximum bytes the caller allowed r2kit to buffer for parts.
+        max: u64,
+    },
     /// A single-request upload exceeded R2's maximum size.
     SingleUploadTooLarge {
         /// Supplied content length in bytes.
@@ -171,6 +178,10 @@ impl fmt::Display for ValidationError {
             Self::AttemptsOutOfRange { provided, min, max } => write!(
                 f,
                 "managed upload attempts {provided} is outside the allowed range {min}..={max}"
+            ),
+            Self::ManagedMemoryBudgetExceeded { required, max } => write!(
+                f,
+                "managed upload may buffer {required} bytes, exceeding the configured memory budget of {max} bytes"
             ),
             Self::SingleUploadTooLarge { provided, max } => write!(
                 f,

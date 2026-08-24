@@ -110,3 +110,39 @@ async fn rejects_invalid_object_writes_before_network() {
         })
     ));
 }
+
+#[tokio::test]
+async fn empty_batch_delete_is_a_no_op() {
+    let result = offline_bucket()
+        .delete_objects(Vec::<String>::new())
+        .await
+        .unwrap();
+
+    assert!(result.is_complete());
+    assert_eq!(result.request_count(), 0);
+    assert!(result.deleted_keys().is_empty());
+    assert!(result.failures().is_empty());
+}
+
+#[tokio::test]
+async fn batch_delete_validates_every_key_before_network() {
+    let error = offline_bucket()
+        .delete_objects(["valid", ""])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error.error(),
+        Error::InvalidInput { field: "key", .. }
+    ));
+    assert_eq!(error.partial_result().request_count(), 0);
+    assert!(error.partial_result().deleted_keys().is_empty());
+}
+
+#[test]
+fn listing_exposes_a_sendable_page_stream() {
+    fn assert_send<T: Send>(_: &T) {}
+
+    let pages = offline_bucket().list().prefix("logs/").into_pages();
+    assert_send(&pages);
+}

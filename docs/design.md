@@ -69,6 +69,14 @@ short-lived part request at a time and reports the exact ETag returned by R2.
   into a validated `UploadedPart` before completion.
 - `PartMd5` signs `Content-MD5` into `UploadPart`. R2 rejects a body whose MD5
   differs before the part is committed.
+- Typed object metadata is applied once at `CreateMultipartUpload`. It is not
+  repeated on parts and cannot be changed when resuming an existing session.
+- Managed local-file uploads validate their worst-case in-flight part buffers
+  against an explicit memory budget before file or network I/O.
+- Managed part retries use capped exponential full jitter and honor bounded
+  numeric server retry delays.
+- Local-file uploads compare source size, modification time, and file identity
+  where supported before completion; callers still own source immutability.
 - `reconcile` treats R2 `ListParts` as authoritative and validates the number,
   uniqueness, and planned byte length of every remote part.
 - `complete_verified` compares exact remote ETags with the proposed manifest

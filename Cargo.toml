@@ -25,12 +25,17 @@ aws-smithy-types = "1"
 bytes = "1"
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
+fastrand = "2"
+headers = "0.4"
+mime = "0.3"
+oxilangtag = { version = "0.1.6", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 tokio = { version = "1", default-features = false, features = ["fs", "io-util", "sync", "time"] }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 md-5 = "0.11"
+mime_guess = "2"
 proptest = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"

@@ -1,14 +1,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    fs::Metadata,
     future::Future,
     path::Path,
     sync::{
         Arc,
         atomic::{AtomicU16, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_types::retry::RetryConfig;
@@ -21,15 +25,18 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 
 use crate::{
-    Bucket, CompletedObject, CompletionManifest, Error, MultipartSessionSnapshot, PartNumber,
-    PresignedMultipart, UploadedPart, ValidationError, observability, validation,
+    Bucket, CompletedObject, CompletionManifest, Error, MultipartSessionSnapshot,
+    ObjectUploadOptions, PartNumber, PresignedMultipart, UploadedPart, ValidationError,
+    observability, validation,
 };
 
 const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024;
 const DEFAULT_CONCURRENCY: usize = 4;
 const DEFAULT_MAX_ATTEMPTS: u8 = 3;
+const DEFAULT_MAX_BUFFERED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CONCURRENCY: usize = 64;
 const MAX_ATTEMPTS: u8 = 10;
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 type ProgressCallback = Arc<dyn Fn(ManagedUploadProgress) + Send + Sync>;
 
@@ -112,6 +119,26 @@ impl ManagedUploadProgress {
     #[must_use]
     pub const fn total_bytes(self) -> u64 {
         self.total_bytes
+    }
+
+    /// Returns the completed fraction in the inclusive range `0.0..=1.0`.
+    ///
+    /// Managed multipart plans reject empty files, but the zero check keeps
+    /// this point-in-time value safe if it is ever constructed internally
+    /// before validation.
+    #[must_use]
+    pub fn fraction(self) -> f64 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            self.transferred_bytes as f64 / self.total_bytes as f64
+        }
+    }
+
+    /// Returns the completed percentage in the inclusive range `0.0..=100.0`.
+    #[must_use]
+    pub fn percentage(self) -> f64 {
+        self.fraction() * 100.0
     }
 }
 
@@ -214,10 +241,12 @@ pub struct ManagedMultipartBuilder {
     part_size: u64,
     concurrency: usize,
     max_attempts: u8,
+    max_buffered_bytes: u64,
     abort_on_error: bool,
     resume: Option<MultipartSessionSnapshot>,
     progress: Option<ProgressCallback>,
     cancellation: Option<ManagedUploadCancellation>,
+    options: ObjectUploadOptions,
 }
 
 impl fmt::Debug for ManagedMultipartBuilder {
@@ -228,15 +257,75 @@ impl fmt::Debug for ManagedMultipartBuilder {
             .field("part_size", &self.part_size)
             .field("concurrency", &self.concurrency)
             .field("max_attempts", &self.max_attempts)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
             .field("abort_on_error", &self.abort_on_error)
             .field("resume", &self.resume)
             .field("progress", &self.progress.as_ref().map(|_| "callback"))
             .field("cancellation", &self.cancellation.is_some())
+            .field("options", &self.options)
             .finish()
     }
 }
 
 impl ManagedMultipartBuilder {
+    /// Sets typed metadata for a newly created multipart object.
+    ///
+    /// Metadata cannot be changed while resuming an existing remote session.
+    #[must_use]
+    pub fn upload_options(mut self, options: ObjectUploadOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Sets the completed object's MIME media type.
+    #[must_use]
+    pub fn content_type(mut self, value: mime::Mime) -> Self {
+        self.options = self.options.with_content_type(value);
+        self
+    }
+
+    /// Sets the completed object's typed HTTP cache policy.
+    #[must_use]
+    pub fn cache_control(mut self, value: headers::CacheControl) -> Self {
+        self.options = self.options.with_cache_control(value);
+        self
+    }
+
+    /// Sets the completed object's content disposition.
+    #[must_use]
+    pub fn content_disposition(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_disposition(value);
+        self
+    }
+
+    /// Sets the completed object's content encoding.
+    #[must_use]
+    pub fn content_encoding(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_encoding(value);
+        self
+    }
+
+    /// Sets the completed object's content language.
+    #[must_use]
+    pub fn content_language(mut self, value: impl Into<String>) -> Self {
+        self.options = self.options.with_content_language(value);
+        self
+    }
+
+    /// Sets the completed object's HTTP expiration time.
+    #[must_use]
+    pub fn expires(mut self, value: SystemTime) -> Self {
+        self.options = self.options.with_expires(value);
+        self
+    }
+
+    /// Adds user-defined metadata to the completed object.
+    #[must_use]
+    pub fn custom_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options = self.options.with_custom_metadata(key, value);
+        self
+    }
+
     /// Sets the uniform non-final part size. Resumed sessions must keep their original size.
     #[must_use]
     pub const fn part_size(mut self, bytes: u64) -> Self {
@@ -266,6 +355,24 @@ impl ManagedMultipartBuilder {
     #[must_use]
     pub const fn max_attempts(mut self, value: u8) -> Self {
         self.max_attempts = value;
+        self
+    }
+
+    /// Sets the maximum memory used by in-flight part buffers.
+    ///
+    /// Validation uses the conservative upper bound `part_size * concurrency`
+    /// and runs before opening the source file or contacting R2. The default is
+    /// 256 MiB.
+    #[must_use]
+    pub const fn max_buffered_bytes(mut self, value: u64) -> Self {
+        self.max_buffered_bytes = value;
+        self
+    }
+
+    /// Sets the maximum memory used by in-flight part buffers in MiB.
+    #[must_use]
+    pub const fn max_buffered_mib(mut self, mebibytes: u64) -> Self {
+        self.max_buffered_bytes = validation::mebibytes(mebibytes);
         self
     }
 
@@ -324,6 +431,7 @@ impl ManagedMultipartBuilder {
             return Err(ManagedUploadError::before_start(Error::Cancelled));
         }
         let file_size = metadata.len();
+        let source_fingerprint = SourceFileFingerprint::from_metadata(&metadata);
 
         let session = match self.resume.clone() {
             Some(snapshot) => {
@@ -343,12 +451,13 @@ impl ManagedMultipartBuilder {
                 .map_err(ManagedUploadError::before_start)?
                 .file_size(file_size)
                 .part_size(self.part_size)
+                .upload_options(self.options.clone())
                 .create()
                 .await
                 .map_err(ManagedUploadError::before_start)?,
         };
 
-        let run = self.run(&path, &session);
+        let run = self.run(&path, &source_fingerprint, &session);
         let result = match self.cancellation.as_ref() {
             Some(cancellation) => {
                 let run = std::pin::pin!(run);
@@ -394,12 +503,27 @@ impl ManagedMultipartBuilder {
             }
             .into());
         }
+        let required = required_buffer_bytes(self.part_size, self.concurrency);
+        if required > self.max_buffered_bytes {
+            return Err(ValidationError::ManagedMemoryBudgetExceeded {
+                required,
+                max: self.max_buffered_bytes,
+            }
+            .into());
+        }
+        if self.resume.is_some() && !self.options.is_empty() {
+            return Err(Error::InvalidInput {
+                field: "upload_options",
+                reason: "cannot change metadata while resuming a multipart session",
+            });
+        }
         Ok(())
     }
 
     async fn run(
         &self,
         path: &Path,
+        source_fingerprint: &SourceFileFingerprint,
         session: &PresignedMultipart,
     ) -> Result<ManagedUploadResult, Error> {
         let existing = if self.resume.is_some() {
@@ -494,10 +618,10 @@ impl ManagedMultipartBuilder {
         let final_metadata = tokio::fs::metadata(path).await.map_err(|_| Error::Io {
             operation: "metadata",
         })?;
-        if final_metadata.len() != total_bytes {
+        if !source_fingerprint.matches(&final_metadata) {
             return Err(Error::InvalidInput {
                 field: "path",
-                reason: "file size changed during upload",
+                reason: "file changed during upload",
             });
         }
 
@@ -575,10 +699,12 @@ impl Bucket {
             part_size: DEFAULT_PART_SIZE,
             concurrency: DEFAULT_CONCURRENCY,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
             abort_on_error: true,
             resume: None,
             progress: None,
             cancellation: None,
+            options: ObjectUploadOptions::default(),
         })
     }
 
@@ -594,11 +720,40 @@ impl Bucket {
             part_size: snapshot.part_size(),
             concurrency: DEFAULT_CONCURRENCY,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
             abort_on_error: true,
             resume: Some(snapshot),
             progress: None,
             cancellation: None,
+            options: ObjectUploadOptions::default(),
         })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceFileFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl SourceFileFingerprint {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        }
+    }
+
+    fn matches(&self, metadata: &Metadata) -> bool {
+        self == &Self::from_metadata(metadata)
     }
 }
 
@@ -660,6 +815,7 @@ async fn upload_part_with_retry(
                 .send()
         },
         is_retryable,
+        sdk_retry_after,
         tokio::time::sleep,
     )
     .await
@@ -670,37 +826,49 @@ async fn upload_part_with_retry(
     UploadedPart::new(number, etag)
 }
 
-async fn retry_with_policy<T, E, Operation, OperationFuture, Classify, Sleep, SleepFuture>(
+async fn retry_with_policy<
+    T,
+    E,
+    Operation,
+    OperationFuture,
+    Classify,
+    RetryAfter,
+    Sleep,
+    SleepFuture,
+>(
     max_attempts: u8,
     number: PartNumber,
     mut operation: Operation,
     classify: Classify,
+    retry_after: RetryAfter,
     mut sleep: Sleep,
 ) -> Result<T, E>
 where
     Operation: FnMut() -> OperationFuture,
     OperationFuture: Future<Output = Result<T, E>>,
     Classify: Fn(&E) -> bool,
+    RetryAfter: Fn(&E) -> Option<Duration>,
     Sleep: FnMut(Duration) -> SleepFuture,
     SleepFuture: Future<Output = ()>,
 {
-    for attempt in 1..=max_attempts {
+    let mut attempt = 1_u8;
+    loop {
         match operation().await {
             Ok(value) => return Ok(value),
             Err(error) if attempt < max_attempts && classify(&error) => {
-                let delay = retry_delay(attempt, number);
+                let delay = retry_delay(attempt, retry_after(&error), fastrand::u64(..));
                 observability::upload_part_retry(
                     number.get(),
                     attempt,
                     max_attempts,
                     delay.as_millis().min(u128::from(u64::MAX)) as u64,
                 );
+                attempt += 1;
                 sleep(delay).await;
             }
             Err(error) => return Err(error),
         }
     }
-    unreachable!("validated max_attempts is at least one")
 }
 
 fn is_retryable<E>(error: &aws_sdk_s3::error::SdkError<E>) -> bool {
@@ -722,20 +890,40 @@ fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 429 || (500..=599).contains(&status)
 }
 
-fn retry_delay(attempt: u8, number: PartNumber) -> Duration {
-    let exponent = u32::from(attempt.saturating_sub(1).min(4));
-    let base = 250_u64 * (1_u64 << exponent);
-    let jitter = u64::from(number.get() % 17) * 7;
-    Duration::from_millis(base + jitter)
+fn sdk_retry_after<E>(error: &aws_sdk_s3::error::SdkError<E>) -> Option<Duration> {
+    let headers = error.raw_response()?.headers();
+    parse_retry_after(headers.get("retry-after"), headers.get("x-amz-retry-after"))
+}
+
+fn parse_retry_after(retry_after: Option<&str>, aws_retry_after: Option<&str>) -> Option<Duration> {
+    retry_after
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .or_else(|| {
+            aws_retry_after
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_millis)
+        })
+}
+
+fn retry_ceiling(attempt: u8) -> Duration {
+    let exponent = u32::from(attempt.saturating_sub(1).min(7));
+    Duration::from_millis(250_u64 * (1_u64 << exponent)).min(MAX_RETRY_DELAY)
+}
+
+fn required_buffer_bytes(part_size: u64, concurrency: usize) -> u64 {
+    part_size.saturating_mul(concurrency as u64)
+}
+
+fn retry_delay(attempt: u8, retry_after: Option<Duration>, random: u64) -> Duration {
+    let ceiling = retry_ceiling(attempt);
+    let ceiling_millis = ceiling.as_millis() as u64;
+    let jitter = Duration::from_millis(random % (ceiling_millis + 1));
+    jitter.max(retry_after.unwrap_or_default().min(MAX_RETRY_DELAY))
 }
 
 async fn list_uploaded_parts(session: &PresignedMultipart) -> Result<Vec<UploadedPart>, Error> {
-    Ok(session
-        .reconcile()
-        .await?
-        .uploaded_parts()
-        .cloned()
-        .collect())
+    Ok(session.reconcile().await?.into_uploaded_parts())
 }
 
 fn planned_part_length(file_size: u64, part_size: u64, number: PartNumber) -> Result<u64, Error> {
@@ -750,7 +938,7 @@ fn planned_part_length(file_size: u64, part_size: u64, number: PartNumber) -> Re
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, future::ready};
+    use std::{collections::VecDeque, fs::OpenOptions, future::ready};
 
     use super::*;
 
@@ -775,12 +963,90 @@ mod tests {
     }
 
     #[test]
-    fn retry_delay_is_bounded_and_part_specific() {
-        let first = retry_delay(1, PartNumber::try_from(1).unwrap());
-        let second = retry_delay(1, PartNumber::try_from(2).unwrap());
-        assert!(first >= Duration::from_millis(250));
-        assert!(second > first);
-        assert!(retry_delay(10, PartNumber::try_from(1).unwrap()) < Duration::from_secs(5));
+    fn retry_uses_full_jitter_with_an_exponential_ceiling() {
+        assert_eq!(retry_ceiling(1), Duration::from_millis(250));
+        assert_eq!(retry_ceiling(2), Duration::from_millis(500));
+        assert_eq!(retry_ceiling(7), Duration::from_secs(16));
+        assert_eq!(retry_ceiling(8), MAX_RETRY_DELAY);
+        assert_eq!(retry_ceiling(10), MAX_RETRY_DELAY);
+
+        assert_eq!(retry_delay(1, None, 0), Duration::ZERO);
+        assert_eq!(
+            retry_delay(1, None, u64::MAX),
+            Duration::from_millis(u64::MAX % 251)
+        );
+        assert!(retry_delay(10, None, u64::MAX) <= MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn retry_after_is_respected_and_bounded() {
+        assert_eq!(
+            parse_retry_after(Some("12"), None),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            parse_retry_after(None, Some("1500")),
+            Some(Duration::from_millis(1_500))
+        );
+        assert_eq!(
+            parse_retry_after(Some("invalid"), Some("also-invalid")),
+            None
+        );
+        assert_eq!(
+            retry_delay(1, Some(Duration::from_secs(10)), 0),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            retry_delay(1, Some(Duration::from_secs(60)), 0),
+            MAX_RETRY_DELAY
+        );
+    }
+
+    #[test]
+    fn buffered_byte_calculation_saturates_on_overflow() {
+        assert_eq!(required_buffer_bytes(8 * 1024 * 1024, 4), 32 * 1024 * 1024);
+        assert_eq!(required_buffer_bytes(u64::MAX, 2), u64::MAX);
+    }
+
+    #[test]
+    fn source_fingerprint_accepts_unchanged_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.bin");
+        std::fs::write(&path, b"unchanged").unwrap();
+        let fingerprint = SourceFileFingerprint::from_metadata(&std::fs::metadata(&path).unwrap());
+
+        assert!(fingerprint.matches(&std::fs::metadata(path).unwrap()));
+    }
+
+    #[test]
+    fn source_fingerprint_detects_same_size_mtime_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.bin");
+        std::fs::write(&path, b"before").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let fingerprint = SourceFileFingerprint::from_metadata(&metadata);
+        let changed_time = metadata.modified().unwrap() + Duration::from_secs(60);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(changed_time)
+            .unwrap();
+
+        assert!(!fingerprint.matches(&std::fs::metadata(path).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_fingerprint_detects_same_size_file_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.bin");
+        std::fs::write(&path, b"before").unwrap();
+        let fingerprint = SourceFileFingerprint::from_metadata(&std::fs::metadata(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"after!").unwrap();
+
+        assert!(!fingerprint.matches(&std::fs::metadata(path).unwrap()));
     }
 
     #[test]
@@ -824,6 +1090,7 @@ mod tests {
                     ready(outcomes.pop_front().unwrap())
                 },
                 injected_retryable,
+                |_| None,
                 |delay| {
                     delays.push(delay);
                     ready(())
@@ -834,7 +1101,12 @@ mod tests {
             assert_eq!(result, Ok("etag"));
             assert_eq!(attempts, 4);
             assert_eq!(delays.len(), 3);
-            assert!(delays.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(
+                delays
+                    .iter()
+                    .enumerate()
+                    .all(|(index, delay)| *delay <= retry_ceiling(index as u8 + 1))
+            );
         });
     }
 
@@ -850,6 +1122,7 @@ mod tests {
                     ready(Err::<(), _>(InjectedFailure::Status(403)))
                 },
                 injected_retryable,
+                |_| None,
                 |_| ready(()),
             )
             .await;
@@ -872,6 +1145,7 @@ mod tests {
                     ready(Err::<(), _>(InjectedFailure::NoResponse))
                 },
                 injected_retryable,
+                |_| None,
                 |_| {
                     delays += 1;
                     ready(())
@@ -902,5 +1176,31 @@ mod tests {
             assert!(cancellation.is_cancelled());
             cancellation.cancelled().await;
         });
+    }
+
+    #[test]
+    fn progress_reports_fraction_and_percentage() {
+        let progress = ManagedUploadProgress {
+            completed_parts: 1,
+            total_parts: 4,
+            transferred_bytes: 25,
+            total_bytes: 100,
+        };
+
+        assert_eq!(progress.fraction(), 0.25);
+        assert_eq!(progress.percentage(), 25.0);
+    }
+
+    #[test]
+    fn progress_helpers_defensively_handle_zero_total_bytes() {
+        let progress = ManagedUploadProgress {
+            completed_parts: 0,
+            total_parts: 0,
+            transferred_bytes: 0,
+            total_bytes: 0,
+        };
+
+        assert_eq!(progress.fraction(), 0.0);
+        assert_eq!(progress.percentage(), 0.0);
     }
 }

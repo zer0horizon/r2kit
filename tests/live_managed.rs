@@ -4,7 +4,9 @@ use std::{
 };
 
 use aws_sdk_s3::primitives::ByteStream;
-use r2kit::{Error, ManagedUploadCancellation, ManagedUploadProgress, R2Client, R2Config};
+use r2kit::{
+    CacheControl, Error, ManagedUploadCancellation, ManagedUploadProgress, R2Client, R2Config, mime,
+};
 
 const MIB: usize = 1024 * 1024;
 
@@ -54,6 +56,8 @@ async fn live_managed_upload_reports_progress_and_cleans_up() {
         .managed_multipart(&key)
         .unwrap()
         .part_size((5 * MIB) as u64)
+        .content_type("video/mp4".parse::<mime::Mime>().unwrap())
+        .cache_control(CacheControl::new().with_private())
         .concurrency(2)
         .max_attempts(4)
         .on_progress(move |progress| captured.lock().unwrap().push(progress))
@@ -68,6 +72,13 @@ async fn live_managed_upload_reports_progress_and_cleans_up() {
             assert_eq!(result.uploaded_parts(), 3);
             assert_eq!(result.reused_parts(), 0);
             assert_remote_bytes(&bucket, &key, &body).await;
+            let metadata = bucket.head(&key).await.unwrap();
+            assert_eq!(metadata.content_type(), Some("video/mp4"));
+            assert!(
+                metadata
+                    .cache_control()
+                    .is_some_and(|value| value.contains("private"))
+            );
             let updates = updates.lock().unwrap();
             let final_update = updates.last().unwrap();
             assert_eq!(final_update.completed_parts(), 3);

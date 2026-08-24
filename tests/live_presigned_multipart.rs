@@ -2,7 +2,10 @@ use std::{env, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
-use r2kit::{CompletionManifest, MultipartPartReceipt, PartMd5, PartNumber, R2Client, R2Config};
+use r2kit::{
+    CacheControl, CompletionManifest, MultipartPartReceipt, PartMd5, PartNumber, R2Client,
+    R2Config, mime,
+};
 
 const MIB: usize = 1024 * 1024;
 
@@ -33,6 +36,8 @@ async fn live_presigned_multipart_round_trip() {
         .unwrap()
         .file_size((11 * MIB) as u64)
         .part_size((5 * MIB) as u64)
+        .content_type("video/mp4".parse::<mime::Mime>().unwrap())
+        .cache_control(CacheControl::new().with_private().with_no_transform())
         .create()
         .await
         .unwrap();
@@ -99,6 +104,14 @@ async fn live_presigned_multipart_round_trip() {
         let expected: Vec<u8> = chunks.into_iter().flatten().collect();
         if actual.as_ref() != expected {
             return Err("downloaded bytes differ");
+        }
+        let metadata = bucket.head(&key).await.map_err(|_| "head failed")?;
+        if metadata.content_type() != Some("video/mp4")
+            || metadata
+                .cache_control()
+                .is_none_or(|value| !value.contains("private") || !value.contains("no-transform"))
+        {
+            return Err("multipart object metadata differs");
         }
         Ok::<(), &'static str>(())
     }

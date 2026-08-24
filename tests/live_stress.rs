@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use futures_util::{StreamExt, TryStreamExt, stream};
 use r2kit::{R2Client, R2Config};
 
 const MIB: usize = 1024 * 1024;
@@ -106,5 +107,64 @@ async fn live_parallel_64_mib_upload_is_exact_and_progress_is_monotonic() {
     .await;
 
     let _ = bucket.delete(&key).await;
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "creates 1,001 objects and requires explicit deep live R2 testing"]
+async fn live_batch_delete_chunks_more_than_one_thousand_keys() {
+    let Some(client) = deep_live_client() else {
+        return;
+    };
+    let bucket = client.bucket("r2kit-live-tests").unwrap();
+    let prefix = format!("_r2kit-tests/{}/batch-delete/", uuid::Uuid::new_v4());
+    let keys = (0..1_001)
+        .map(|index| format!("{prefix}{index:04}.bin"))
+        .collect::<Vec<_>>();
+
+    let result = async {
+        let uploaded = stream::iter(keys.iter().map(|key| {
+            let bucket = bucket.clone();
+            async move {
+                bucket
+                    .put_bytes(key, Vec::new())
+                    .await
+                    .map(|_| key)
+                    .map_err(|_| "stress object PUT failed")
+            }
+        }))
+        .buffer_unordered(32)
+        .try_collect::<Vec<_>>()
+        .await?;
+        if uploaded.len() != keys.len() {
+            return Err("not every stress object was uploaded");
+        }
+
+        let deleted = bucket
+            .delete_objects(keys.clone())
+            .await
+            .map_err(|_| "multi-request batch delete failed")?;
+        if deleted.request_count() != 2
+            || deleted.deleted_keys().len() != keys.len()
+            || !deleted.failures().is_empty()
+        {
+            return Err("batch delete did not complete as two successful requests");
+        }
+
+        let page = bucket
+            .list()
+            .prefix(&prefix)
+            .limit(1)
+            .send()
+            .await
+            .map_err(|_| "post-delete listing failed")?;
+        if !page.objects().is_empty() || page.next_continuation_token().is_some() {
+            return Err("batch-deleted objects remain visible");
+        }
+        Ok::<(), &'static str>(())
+    }
+    .await;
+
+    let _ = bucket.delete_objects(keys).await;
     result.unwrap();
 }

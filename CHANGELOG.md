@@ -14,6 +14,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Optional secret-safe `tracing` events, disabled by default.
 - `part_size_mib` conveniences for readable multipart configuration without
   repeated byte-unit arithmetic.
+- Typed `Mime` and `CacheControl` object metadata for regular, presigned, and
+  managed uploads, including multipart creation and browser-safe signed headers.
+- Upload support for content disposition, encoding, language, expiration, and
+  user-defined metadata across regular, presigned, and managed workflows.
+- Local structural BCP 47 validation for single and comma-separated
+  `Content-Language` values.
+- Opt-in R2 live coverage for extended metadata round trips, automatic page
+  traversal, ordinary batch deletion, and a 1,001-object multi-request delete.
+- Auto-paginating object page streams that preserve delimiter and common-prefix
+  semantics.
+- Multi-object deletion with automatic 1,000-key batching, per-key failures,
+  and partial results when a later request fails.
+- Managed-upload progress fraction and percentage helpers.
+- A configurable 256 MiB default budget for in-flight managed-upload part
+  buffers, validated before file or network I/O.
+- Capped exponential full-jitter retries with bounded server retry-delay support.
+- Source-file mutation detection using size, modification time, and file
+  identity where supported.
 
 ### Fixed
 
