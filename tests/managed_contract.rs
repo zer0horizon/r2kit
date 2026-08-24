@@ -60,7 +60,7 @@ async fn rejects_invalid_managed_limits_before_file_or_network_io() {
         Error::Validation(ValidationError::PartSizeOutOfRange {
             provided: 1024,
             min: 5_242_880,
-            max: 5_368_709_120
+            max: 5_363_466_240
         })
     ));
 

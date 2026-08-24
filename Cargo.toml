@@ -3,14 +3,15 @@ name = "r2kit"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.1"
-description = "An ergonomic Rust foundation for Cloudflare R2."
+publish = ["crates-io"]
+description = "A safe, ergonomic Rust toolkit for Cloudflare R2 object storage."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zer0horizon/r2kit"
 homepage = "https://github.com/zer0horizon/r2kit"
 documentation = "https://docs.rs/r2kit"
 readme = "README.md"
-keywords = ["cloudflare", "r2", "s3", "storage"]
-categories = ["api-bindings", "web-programming"]
+keywords = ["cloudflare", "r2", "s3", "object-storage", "multipart"]
+categories = ["api-bindings", "asynchronous", "web-programming"]
 include = ["/src/**", "/tests/**", "/examples/**", "/docs/**", "/Cargo.toml", "/CHANGELOG.md", "/CONTRIBUTING.md", "/README.md", "/SECURITY.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
 
 [features]

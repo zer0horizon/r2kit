@@ -806,7 +806,10 @@ async fn upload_part_with_retry(
                 .key(key)
                 .upload_id(upload_id)
                 .part_number(i32::from(number.get()))
-                .content_length(bytes.len() as i64)
+                .content_length(
+                    i64::try_from(bytes.len())
+                        .expect("validated multipart part length fits in i64"),
+                )
                 .body(ByteStream::from(bytes.clone()))
                 .customize()
                 .config_override(

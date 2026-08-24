@@ -3,9 +3,11 @@ use std::time::Duration;
 use crate::{Error, ValidationError};
 
 pub(crate) const MAX_KEY_BYTES: usize = 1_024;
-// https://developers.cloudflare.com/r2/objects/upload-objects/#part-size-limits
+// R2's platform limit is 5 MiB below 5 GiB for a single request/part.
+// https://developers.cloudflare.com/r2/platform/limits/
 pub(crate) const MIN_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
-pub(crate) const MAX_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+pub(crate) const MAX_UPLOAD_SIZE: u64 = 5 * 1024 * 1024 * 1024 - MIN_MULTIPART_PART_SIZE;
+pub(crate) const MAX_MULTIPART_PART_SIZE: u64 = MAX_UPLOAD_SIZE;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 pub(crate) const fn mebibytes(value: u64) -> u64 {

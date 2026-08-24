@@ -44,8 +44,8 @@ cargo deny check advisories bans licenses sources
 ```
 
 Live tests require bucket-scoped Object Read & Write credentials and are never
-run automatically for pull requests. See the README for the explicit opt-in
-command and dedicated bucket requirements.
+run automatically for pull requests. Use only a dedicated test bucket and the
+explicit opt-in commands below.
 
 Run the live contract suite against the dedicated test bucket:
 

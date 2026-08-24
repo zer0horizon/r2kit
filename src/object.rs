@@ -17,7 +17,7 @@ use oxilangtag::LanguageTag;
 
 use crate::{Bucket, Error, PresignedRequest, ValidationError, validation};
 
-const MAX_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+const MAX_SINGLE_PUT_SIZE: u64 = validation::MAX_UPLOAD_SIZE;
 const MAX_LIST_KEYS: u16 = 1_000;
 const MAX_DELETE_KEYS: usize = 1_000;
 const MAX_OBJECT_METADATA_BYTES: usize = 8_192;
@@ -949,7 +949,9 @@ impl Bucket {
             .put_object()
             .bucket(&self.name)
             .key(key)
-            .content_length(content_length as i64)
+            .content_length(
+                i64::try_from(content_length).expect("validated single-upload length fits in i64"),
+            )
             .set_content_type(options.content_type_value())
             .set_cache_control(options.cache_control_value())
             .set_content_disposition(options.content_disposition_value())
@@ -1024,7 +1026,9 @@ impl Bucket {
             .put_object()
             .bucket(&self.name)
             .key(key)
-            .content_length(content_length as i64)
+            .content_length(
+                i64::try_from(content_length).expect("validated single-upload length fits in i64"),
+            )
             .set_content_type(options.content_type_value())
             .set_cache_control(options.cache_control_value())
             .set_content_disposition(options.content_disposition_value())

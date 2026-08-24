@@ -1,5 +1,7 @@
-# r2kit
+# r2kit — Cloudflare R2 object transfers for Rust
 
+[![Crates.io](https://img.shields.io/crates/v/r2kit.svg)](https://crates.io/crates/r2kit)
+[![Documentation](https://docs.rs/r2kit/badge.svg)](https://docs.rs/r2kit)
 [![CI](https://github.com/zer0horizon/r2kit/actions/workflows/ci.yml/badge.svg)](https://github.com/zer0horizon/r2kit/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
@@ -10,9 +12,9 @@ account endpoint, `auto` signing region, secret-safe presigned requests,
 resumable multipart sessions, and managed file uploads with bounded concurrency
 and exact retries.
 
-> **Status:** pre-release `0.1.0`. The API is still evolving and the crate has
-> not been published to crates.io yet. Core object and multipart workflows have
-> been verified against live Cloudflare R2.
+> **Status:** `0.1.0` is the initial crates.io release. The API is still
+> evolving, but core object and multipart workflows are verified against live
+> Cloudflare R2.
 
 ## Why r2kit?
 
@@ -30,10 +32,10 @@ and exact retries.
 
 ## Quick start
 
-Until the first crates.io release, install directly from GitHub:
+Add r2kit and a Tokio runtime:
 
 ```sh
-cargo add r2kit --git https://github.com/zer0horizon/r2kit
+cargo add r2kit
 cargo add tokio --features macros,rt-multi-thread
 ```
 
@@ -400,7 +402,7 @@ Enable Serde when a session or protocol DTO crosses a storage or JSON boundary:
 
 ```toml
 [dependencies]
-r2kit = { git = "https://github.com/zer0horizon/r2kit", features = ["serde"] }
+r2kit = { version = "0.1.0", features = ["serde"] }
 ```
 
 `MultipartSessionSnapshot::into_persistence_record()` deliberately exposes a
@@ -443,7 +445,7 @@ Tracing is opt-in and disabled by default:
 
 ```toml
 [dependencies]
-r2kit = { git = "https://github.com/zer0horizon/r2kit", features = ["tracing"] }
+r2kit = { version = "0.1.0", features = ["tracing"] }
 ```
 
 The library emits events to target `r2kit` but never installs a subscriber.
@@ -459,8 +461,9 @@ presigned URLs, and signed headers are excluded.
   short expirations, and never log them.
 - Deterministic input failures are validated before network requests whenever
   possible.
-- R2 multipart plans enforce 5 MiB through 5 GiB parts, at most 10,000 parts,
-  equal non-final part sizes, and the effective multipart object limit.
+- R2 multipart plans enforce parts from 5 MiB through R2's effective maximum
+  of 5 MiB below 5 GiB, at most 10,000 parts, equal non-final part sizes, and
+  the effective multipart object limit.
 - Managed uploads use bounded concurrency, a configurable part-buffer memory
   budget, capped full-jitter retries, and an exact retry limit.
 - Applications still own authorization, rate limiting, CORS policy, and the
@@ -474,8 +477,7 @@ Report vulnerabilities through GitHub's private security advisory flow. See
 - [Object round trip](examples/object_round_trip.rs)
 - [Managed file upload](examples/managed_upload.rs)
 - [Architecture and protocol invariants](docs/design.md)
-- [API documentation](https://docs.rs/r2kit) — available after the first
-  crates.io release
+- [API documentation](https://docs.rs/r2kit)
 
 The runnable examples require `R2_BUCKET` and `R2_KEY`. The managed upload
 example additionally accepts the local file path as its first argument.

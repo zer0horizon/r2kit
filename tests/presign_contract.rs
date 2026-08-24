@@ -282,11 +282,15 @@ async fn rejects_invalid_single_object_presign_contracts() {
     ));
     assert!(matches!(
         bucket
-            .presign_put("key", 5 * 1024 * 1024 * 1024 + 1, Duration::from_secs(60))
+            .presign_put(
+                "key",
+                5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 + 1,
+                Duration::from_secs(60),
+            )
             .await,
         Err(Error::Validation(ValidationError::SingleUploadTooLarge {
-            provided: 5_368_709_121,
-            max: 5_368_709_120
+            provided: 5_363_466_241,
+            max: 5_363_466_240
         }))
     ));
 }

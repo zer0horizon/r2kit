@@ -98,15 +98,15 @@ async fn rejects_invalid_object_writes_before_network() {
         .put_stream(
             "large.bin",
             ByteStream::from_static(&[]),
-            5 * 1024 * 1024 * 1024 + 1,
+            5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024 + 1,
         )
         .await
         .unwrap_err();
     assert!(matches!(
         too_large,
         Error::Validation(ValidationError::SingleUploadTooLarge {
-            provided: 5_368_709_121,
-            max: 5_368_709_120
+            provided: 5_363_466_241,
+            max: 5_363_466_240
         })
     ));
 }

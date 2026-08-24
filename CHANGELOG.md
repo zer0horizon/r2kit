@@ -6,8 +6,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-25
+
 ### Added
 
+- R2-native client and bucket configuration.
+- Typed default, EU, US, and FedRAMP jurisdiction endpoints.
+- Validated connection, read, operation, and per-attempt timeouts plus SDK
+  request-attempt configuration.
+- Core object PUT, GET, HEAD, LIST, and DELETE operations.
+- Presigned single-object and multipart upload flows.
+- Resumable managed multipart file uploads with bounded concurrency, exact
+  retries, progress reporting, cancellation, and cleanup.
+- Secret-safe protocol and persistence types with optional Serde support.
 - Machine-readable numeric validation errors with supplied and accepted bounds.
 - Sanitized R2/AWS failure categories without exposing raw SDK errors.
 - Explicit read-only bucket-access preflight helpers.
@@ -36,20 +47,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Enforced R2's documented 63-character bucket-name maximum.
-
-## [0.1.0] - 2026-08-23
-
-### Added
-
-- R2-native client and bucket configuration.
-- Typed default, EU, US, and FedRAMP jurisdiction endpoints.
-- Validated connection, read, operation, and per-attempt timeouts plus SDK
-  request-attempt configuration.
-- Core object PUT, GET, HEAD, LIST, and DELETE operations.
-- Presigned single-object and multipart upload flows.
-- Resumable managed multipart file uploads with bounded concurrency, exact
-  retries, progress reporting, cancellation, and cleanup.
-- Secret-safe protocol and persistence types with optional Serde support.
+- Enforced R2's effective per-request upload maximum of 5 MiB below 5 GiB.
 
 [Unreleased]: https://github.com/zer0horizon/r2kit/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/zer0horizon/r2kit/releases/tag/v0.1.0

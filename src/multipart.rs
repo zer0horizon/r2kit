@@ -376,7 +376,10 @@ impl PresignedUploadPart {
 /// Serializable protocol DTO sent from a trusted signer to an uploader.
 ///
 /// This value contains a bearer URL. Serialization is therefore an explicit
-/// secret-exposure boundary even though `Debug` remains redacted.
+/// secret-exposure boundary even though `Debug` remains redacted. Its primitive
+/// fields are a transport representation of an already validated and signed
+/// request; deserializing this DTO does not establish a new trusted validation
+/// boundary.
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct MultipartUploadPartRequest {
@@ -1219,7 +1222,7 @@ mod tests {
 
     #[test]
     fn rejects_an_object_over_r2s_effective_limit() {
-        let max_part_size = 5 * 1024 * 1024 * 1024;
+        let max_part_size = validation::MAX_MULTIPART_PART_SIZE;
         let result = MultipartPlan::new(MAX_MULTIPART_OBJECT_SIZE + 1, max_part_size);
         assert!(matches!(
             result,
